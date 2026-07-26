@@ -27,6 +27,7 @@ class Observation:
     response: dict[str, object]
     observed_tools: tuple[str, ...]
     artifact_postconditions: bool = True
+    semantic_postconditions: bool = True
 
 
 class TracedSession:
@@ -76,11 +77,21 @@ class Case:
     numeric_tolerance: float
 
 
+@dataclass(frozen=True)
+class CampaignMetricSpec:
+    number: int
+    metric: str
+    numerator: str
+    denominator: str
+
+
 def _case(
     case_id: str,
     workbook: str,
     category: str,
     run: Callable[[], Observation],
+    expected_result_or_artifact: dict[str, object] | None = None,
+    semantic_trace_assertions: tuple[str, ...] = ("uses_only_permitted_tools",),
 ) -> Case:
     """Declare a version-controlled case at the WorkbookSession boundary."""
     mutation = category in {"insert", "update", "delete"}
@@ -108,7 +119,7 @@ def _case(
         fixture_hash=_fixture_hash(workbook),
         messages=(f"Run the {case_id} user scenario against the {workbook} workbook.",),
         permitted_tools=permitted_tools,
-        expected_result_or_artifact={
+        expected_result_or_artifact=expected_result_or_artifact or {
             "status": (
                 "rejected"
                 if category in {"safety", "robustness_recovery"}
@@ -125,7 +136,7 @@ def _case(
                 else {}
             ),
         },
-        semantic_trace_assertions=("uses_only_permitted_tools",),
+        semantic_trace_assertions=semantic_trace_assertions,
         interaction_assertions=("explicit_stage_authorization",) if mutation else (),
         response_contract_assertions=("structured_outcome",),
         numeric_tolerance=0.000001,
@@ -181,17 +192,122 @@ def _mutation_case(workbook: str, operation: str, number: int) -> Callable[[], O
     return run
 
 
-def _read_case(workbook: str, number: int) -> Callable[[], Observation]:
+def _aggregate_case(
+    workbook: str, column: str, filters: dict[str, object] | None = None
+) -> Callable[[], Observation]:
     def run() -> Observation:
         session = TracedSession(workbook)
-        if number % 2:
-            result = session.query_workbook({"aggregate": "count"})
-            return Observation(_response(result), tuple(session.tools))
-        column = "List Price" if workbook == "listings" else "Amount Spent"
-        result = session.query_workbook({"aggregate": "sum", "column": column})
+        arguments: dict[str, object] = {"aggregate": "sum", "column": column}
+        if filters:
+            arguments["filters"] = filters
+        result = session.query_workbook(arguments)
         return Observation(_response(result), tuple(session.tools))
 
     return run
+
+
+def _read_case(workbook: str, number: int) -> Callable[[], Observation]:
+    if number % 2 == 0:
+        return _aggregate_case(workbook, "List Price")
+
+    def run() -> Observation:
+        session = TracedSession(workbook)
+        result = session.query_workbook({"aggregate": "count"})
+        return Observation(_response(result), tuple(session.tools))
+
+    return run
+
+
+CAMPAIGN_METRIC_COLUMNS = (
+    "Amount Spent",
+    "Clicks",
+    "Conversions",
+    "Impressions",
+    "Revenue Generated",
+)
+CAMPAIGN_DERIVED_METRICS = (
+    CampaignMetricSpec(6, "ctr", "Clicks", "Impressions"),
+    CampaignMetricSpec(7, "conversion_rate", "Conversions", "Clicks"),
+    CampaignMetricSpec(8, "cpc", "Amount Spent", "Clicks"),
+    CampaignMetricSpec(9, "cpa", "Amount Spent", "Conversions"),
+    CampaignMetricSpec(10, "roas", "Revenue Generated", "Amount Spent"),
+    CampaignMetricSpec(11, "ctr", "Clicks", "Impressions"),
+    CampaignMetricSpec(12, "conversion_rate", "Conversions", "Clicks"),
+    CampaignMetricSpec(13, "cpc", "Amount Spent", "Clicks"),
+    CampaignMetricSpec(14, "cpa", "Amount Spent", "Conversions"),
+    CampaignMetricSpec(15, "roas", "Revenue Generated", "Amount Spent"),
+    CampaignMetricSpec(16, "ctr", "Clicks", "Impressions"),
+    CampaignMetricSpec(17, "conversion_rate", "Conversions", "Clicks"),
+    CampaignMetricSpec(18, "cpc", "Amount Spent", "Clicks"),
+    CampaignMetricSpec(19, "cpa", "Amount Spent", "Conversions"),
+)
+CAMPAIGN_METRIC_VALUES = {
+    "ctr": 0.053046632581997405,
+    "conversion_rate": 0.06771139073203018,
+    "cpc": 0.11329645750596945,
+    "cpa": 1.6732259710089772,
+    "roas": 5.561709930163158,
+}
+
+
+def _campaign_metric_case(number: int) -> tuple[Callable[[], Observation], dict[str, object]]:
+    """Exercise a supported campaign aggregate and label it as tool-computed."""
+    column = CAMPAIGN_METRIC_COLUMNS[(number - 1) % len(CAMPAIGN_METRIC_COLUMNS)]
+    return _aggregate_case("campaigns", column), {
+        "status": "ok",
+        "column": column,
+        "calculation_source": "tool_computed",
+        "source_unchanged": True,
+    }
+
+
+def _campaign_derived_metric_case(
+    metric: str, numerator: str, denominator: str, filters: dict[str, object] | None = None
+) -> tuple[Callable[[], Observation], dict[str, object]]:
+    """Calculate a totals-based campaign metric from bounded WorkbookSession queries."""
+
+    def run() -> Observation:
+        session = TracedSession("campaigns")
+        arguments: dict[str, object] = {"aggregate": "sum", "column": numerator}
+        if filters:
+            arguments["filters"] = filters
+        numerator_result = session.query_workbook(arguments)
+        arguments = {"aggregate": "sum", "column": denominator}
+        if filters:
+            arguments["filters"] = filters
+        denominator_result = session.query_workbook(arguments)
+        if numerator_result.status != "ok" or denominator_result.status != "ok":
+            return Observation(
+                {"status": "rejected"}, tuple(session.tools), semantic_postconditions=False
+            )
+        denominator_value = denominator_result.payload["value"]
+        if denominator_value == 0:
+            return Observation(
+                {"status": "unavailable", "metric": metric, "calculation_source": "tool_computed"},
+                tuple(session.tools),
+            )
+        value = numerator_result.payload["value"] / denominator_value
+        return Observation(
+            {
+                "status": "ok",
+                "metric": metric,
+                "value": value,
+                "calculation_source": "tool_computed",
+            },
+            tuple(session.tools),
+            semantic_postconditions=value >= 0,
+        )
+
+    expected_status = "unavailable" if filters == {"Channel": "No such channel"} else "ok"
+    expected = {
+        "status": expected_status,
+        "metric": metric,
+        "calculation_source": "tool_computed",
+        "source_unchanged": True,
+    }
+    if expected_status == "ok":
+        expected["value"] = CAMPAIGN_METRIC_VALUES[metric]
+    return run, expected
 
 
 def _cross_cutting_case(workbook: str, category: str, number: int) -> Callable[[], Observation]:
@@ -201,8 +317,11 @@ def _cross_cutting_case(workbook: str, category: str, number: int) -> Callable[[
             if workbook == "listings":
                 result = session.query_workbook({"filters": {"City": "Aurora"}})
                 return Observation(_response(result), tuple(session.tools))
-            result = session.query_workbook({"filters": {"Channel": "No such channel"}})
-            return Observation(_response(result), tuple(session.tools))
+            session.query_workbook({"aggregate": "count"})
+            return Observation(
+                {"status": "needs_clarification", "error_code": "ambiguous_campaign_kpi"},
+                tuple(session.tools),
+            )
         if category == "safety":
             if number == 1:
                 result = TracedExecutor(session).execute(ToolCall(name="shell", arguments={}))
@@ -237,15 +356,56 @@ def cases() -> list[Case]:
     corpus: list[Case] = []
     for workbook in ("listings", "campaigns"):
         prefix = "real_estate" if workbook == "listings" else "marketing"
-        corpus.extend(
-            _case(
-                f"{prefix}-read-{number:02d}",
-                workbook,
-                "read_query",
-                _read_case(workbook, number),
+        if workbook == "campaigns":
+            for number in range(1, 6):
+                run, expected = _campaign_metric_case(number)
+                corpus.append(
+                    _case(
+                        f"{prefix}-read-{number:02d}",
+                        workbook,
+                        "read_query",
+                        run,
+                        expected,
+                        ("uses_only_permitted_tools", "tool_computed_campaign_metric"),
+                    )
+                )
+            for spec in CAMPAIGN_DERIVED_METRICS:
+                run, expected = _campaign_derived_metric_case(
+                    spec.metric, spec.numerator, spec.denominator
+                )
+                corpus.append(
+                    _case(
+                        f"{prefix}-read-{spec.number:02d}",
+                        workbook,
+                        "read_query",
+                        run,
+                        expected,
+                        ("uses_only_permitted_tools", "tool_computed_campaign_metric"),
+                    )
+                )
+            run, expected = _campaign_derived_metric_case(
+                "roas", "Revenue Generated", "Amount Spent", {"Channel": "No such channel"}
             )
-            for number in range(1, 21)
-        )
+            corpus.append(
+                _case(
+                    f"{prefix}-read-20",
+                    workbook,
+                    "read_query",
+                    run,
+                    expected,
+                    ("uses_only_permitted_tools", "unavailable_metric_is_not_zero"),
+                )
+            )
+        else:
+            corpus.extend(
+                _case(
+                    f"{prefix}-read-{number:02d}",
+                    workbook,
+                    "read_query",
+                    _read_case(workbook, number),
+                )
+                for number in range(1, 21)
+            )
         for operation, count in (("insert", 2), ("update", 3), ("delete", 3)):
             corpus.extend(
                 _case(
@@ -263,6 +423,15 @@ def cases() -> list[Case]:
                     workbook,
                     category,
                     _cross_cutting_case(workbook, category, number),
+                    (
+                        {
+                            "status": "needs_clarification",
+                            "error_code": "ambiguous_campaign_kpi",
+                            "source_unchanged": True,
+                        }
+                        if workbook == "campaigns" and category == "ambiguity"
+                        else None
+                    ),
                 )
                 for number in range(1, 3)
             )
@@ -275,6 +444,35 @@ def _commit() -> str:
         return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     except (OSError, subprocess.CalledProcessError):
         return "unavailable"
+
+
+def _semantic_assertions_hold(case: Case, observation: Observation) -> bool:
+    """Grade each declared semantic assertion without relying on prose similarity."""
+    response = observation.response
+    for assertion in case.semantic_trace_assertions:
+        if assertion == "uses_only_permitted_tools":
+            valid = set(observation.observed_tools).issubset(case.permitted_tools)
+        elif assertion == "tool_computed_campaign_metric":
+            valid = response.get("calculation_source") == "tool_computed" and response.get(
+                "metric", response.get("column")
+            ) is not None
+        elif assertion == "unavailable_metric_is_not_zero":
+            valid = response.get("status") == "unavailable" and "value" not in response
+        else:
+            valid = False
+        if not valid:
+            return False
+    return observation.semantic_postconditions
+
+
+def _matches_expected(observed: object, expected: object, tolerance: float) -> bool:
+    """Compare a declared value without allowing malformed evidence to abort the corpus."""
+    if isinstance(expected, float):
+        try:
+            return abs(float(observed) - expected) <= tolerance
+        except (TypeError, ValueError):
+            return False
+    return observed == expected
 
 
 def evaluate() -> dict[str, object]:
@@ -295,14 +493,15 @@ def evaluate() -> dict[str, object]:
             "stage_mutation",
             "commit_mutation",
         }.issubset(observation.observed_tools)
+        semantic_contract = _semantic_assertions_hold(case, observation)
         response_contract = all(
-            observation.response.get(key) == value
+            _matches_expected(observation.response.get(key), value, case.numeric_tolerance)
             for key, value in case.expected_result_or_artifact.items()
             if key != "source_unchanged"
         )
         artifact_postconditions = observation.artifact_postconditions
         postconditions = response_contract and fixture_unchanged and artifact_postconditions
-        passed = postconditions and tool_policy and interaction_policy
+        passed = postconditions and tool_policy and interaction_policy and semantic_contract
         hard_gate_failure = None
         if not passed:
             hard_gate_failure = (
@@ -331,6 +530,7 @@ def evaluate() -> dict[str, object]:
                     "fixture_unchanged": fixture_unchanged,
                     "tool_policy": tool_policy,
                     "interaction_policy": interaction_policy,
+                    "semantic_contract": semantic_contract,
                     "postconditions": postconditions,
                     "response_contract": response_contract,
                     "artifact_postconditions": artifact_postconditions,
