@@ -7,10 +7,11 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pandas as pd
 from openpyxl import load_workbook
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 
 from app.agent_loop import ToolCall, ToolResult
 
@@ -21,6 +22,19 @@ SOURCES = {
 }
 ID_COLUMNS = {"listings": "Listing ID", "campaigns": "Campaign ID"}
 MAX_ROWS = 100
+
+FilterValue = str | int | float | bool | None
+
+
+class QueryRequest(BaseModel):
+    """The complete, bounded representation accepted by ``query_workbook``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    filters: dict[str, FilterValue] = Field(default_factory=dict)
+    aggregate: Literal["rows", "count", "sum"] = "rows"
+    column: str | None = None
+    limit: StrictInt = Field(default=10, ge=1, le=MAX_ROWS)
 
 
 def _digest(path: Path) -> str:
@@ -59,12 +73,13 @@ class WorkbookSession:
         self._root.mkdir(parents=True, exist_ok=True)
         self._active = self._root / f"{workbook}-v1.xlsx"
         shutil.copy2(self._source, self._active)
+        self._source_identity = _digest(self._active)
         self._version = 1
         self._staged: StagedMutation | None = None
 
     @property
     def source_hash(self) -> str:
-        return _digest(self._source)
+        return self._source_identity
 
     @property
     def active_path(self) -> Path:
@@ -82,15 +97,18 @@ class WorkbookSession:
                 "rows": len(frame),
                 "columns": list(frame.columns),
                 "stable_id": ID_COLUMNS[self.workbook],
+                "source_identity": self._source_identity,
                 "version": self._version,
             },
         )
 
-    def query_workbook(self, arguments: dict[str, Any]) -> ToolResult:
-        allowed = {"filters", "aggregate", "column", "limit"}
-        if set(arguments) - allowed:
-            return ToolResult(status="rejected", payload={"error_code": "unsupported_query_field"})
-        filters = arguments.get("filters", {})
+    def query_workbook(self, arguments: Any) -> ToolResult:
+        try:
+            query = QueryRequest.model_validate(arguments, strict=True)
+        except ValidationError:
+            return ToolResult(status="rejected", payload={"error_code": "invalid_query"})
+
+        filters = query.filters
         if not isinstance(filters, dict):
             return ToolResult(status="rejected", payload={"error_code": "invalid_filters"})
         frame = self._frame()
@@ -112,13 +130,13 @@ class WorkbookSession:
                 )
         for column, expected in filters.items():
             frame = frame.loc[frame[column] == expected]
-        aggregate = arguments.get("aggregate", "rows")
+        aggregate = query.aggregate
         if aggregate == "count":
             return ToolResult(
                 status="ok", payload={"count": len(frame), "calculation_source": "tool_computed"}
             )
         if aggregate == "sum":
-            column = arguments.get("column")
+            column = query.column
             if column not in frame.columns or not pd.api.types.is_numeric_dtype(frame[column]):
                 return ToolResult(
                     status="rejected", payload={"error_code": "invalid_aggregate_column"}
@@ -133,9 +151,7 @@ class WorkbookSession:
             )
         if aggregate != "rows":
             return ToolResult(status="rejected", payload={"error_code": "unsupported_aggregate"})
-        limit = arguments.get("limit", 10)
-        if not isinstance(limit, int) or limit < 1 or limit > MAX_ROWS:
-            return ToolResult(status="rejected", payload={"error_code": "invalid_limit"})
+        limit = query.limit
         rows = [
             {key: _value(value) for key, value in row.items()}
             for row in frame.head(limit).to_dict("records")
