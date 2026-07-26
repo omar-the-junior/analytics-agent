@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 import pandas as pd
 from openpyxl import load_workbook
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError
 
 from app.agent_loop import ToolCall, ToolResult
 
@@ -35,6 +35,16 @@ class QueryRequest(BaseModel):
     aggregate: Literal["rows", "count", "sum"] = "rows"
     column: str | None = None
     limit: StrictInt = Field(default=10, ge=1, le=MAX_ROWS)
+
+
+class MutationRequest(BaseModel):
+    """The complete, bounded representation accepted by ``stage_mutation``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    operation: Literal["insert", "update", "delete"]
+    target_id: StrictStr = Field(min_length=1, pattern=r"\S")
+    values: dict[str, FilterValue] = Field(default_factory=dict)
 
 
 def _digest(path: Path) -> str:
@@ -161,25 +171,51 @@ class WorkbookSession:
             payload={"count": len(frame), "rows": rows, "truncated": len(frame) > limit},
         )
 
-    def stage_mutation(self, arguments: dict[str, Any]) -> ToolResult:
-        allowed = {"operation", "target_id", "values"}
-        if set(arguments) - allowed or arguments.get("operation") not in {
-            "insert",
-            "update",
-            "delete",
-        }:
-            return ToolResult(status="rejected", payload={"error_code": "invalid_mutation"})
-        operation = arguments["operation"]
-        target_id = arguments.get("target_id")
-        values = arguments.get("values", {})
-        if not isinstance(target_id, str) or not isinstance(values, dict):
+    def _validate_mutation_values(
+        self, frame: pd.DataFrame, values: dict[str, FilterValue]
+    ) -> ToolResult | None:
+        invalid = []
+        for column, value in values.items():
+            series = frame[column]
+            if pd.api.types.is_numeric_dtype(series) and (
+                isinstance(value, bool) or not isinstance(value, int | float)
+            ):
+                invalid.append(column)
+            elif pd.api.types.is_datetime64_any_dtype(series) and (
+                not isinstance(value, str) or pd.isna(pd.to_datetime(value, errors="coerce"))
+            ):
+                invalid.append(column)
+        if invalid:
             return ToolResult(
-                status="rejected", payload={"error_code": "invalid_mutation_arguments"}
+                status="rejected", payload={"error_code": "invalid_field_value", "fields": invalid}
             )
+        if self.workbook == "listings" and "Listing Status" in values:
+            statuses = set(frame["Listing Status"].dropna().unique())
+            if values["Listing Status"] not in statuses:
+                return ToolResult(
+                    status="rejected", payload={"error_code": "invalid_listing_status"}
+                )
+        return None
+
+    def stage_mutation(self, arguments: Any) -> ToolResult:
+        try:
+            mutation = MutationRequest.model_validate(arguments, strict=True)
+        except ValidationError:
+            return ToolResult(status="rejected", payload={"error_code": "invalid_mutation"})
+        operation = mutation.operation
+        target_id = mutation.target_id
+        values = mutation.values
+        if operation == "delete" and values:
+            return ToolResult(status="rejected", payload={"error_code": "invalid_delete_values"})
         frame = self._frame()
         identifier = ID_COLUMNS[self.workbook]
         if set(values) - set(frame.columns):
             return ToolResult(status="rejected", payload={"error_code": "unknown_field"})
+        if operation == "update" and identifier in values:
+            return ToolResult(status="rejected", payload={"error_code": "stable_id_immutable"})
+        invalid_values = self._validate_mutation_values(frame, values)
+        if invalid_values:
+            return invalid_values
         matches = frame.loc[frame[identifier].astype(str) == target_id]
         if operation == "insert":
             if (
@@ -206,6 +242,13 @@ class WorkbookSession:
                 if operation == "delete"
                 else {**before, **{key: _value(value) for key, value in values.items()}}
             )
+        if self.workbook == "listings" and after is not None:
+            if after.get("Listing Status") == "Sold" and after.get("Sale Price") is None:
+                return ToolResult(status="rejected", payload={"error_code": "missing_sale_price"})
+        warnings = []
+        if self.workbook == "listings" and after is not None:
+            if after.get("Listing Status") == "Active" and after.get("Sale Price") is not None:
+                warnings.append("active_listing_retains_sale_price")
         stage_id = hashlib.sha256(
             f"{self._version}:{operation}:{target_id}:{values}".encode()
         ).hexdigest()[:16]
@@ -219,8 +262,9 @@ class WorkbookSession:
                 "stage_id": stage_id,
                 "operation": operation,
                 "stable_id": target_id,
-                "before": before,
-                "after": after,
+                "before": before if operation != "update" else {key: before[key] for key in values},
+                "after": after if operation != "update" else {key: after[key] for key in values},
+                "warnings": warnings,
             },
         )
 

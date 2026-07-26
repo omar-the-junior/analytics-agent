@@ -79,20 +79,107 @@ def test_stage_requires_exact_commit_and_verifies_artifact(tmp_path: Path) -> No
     source_bytes = SOURCES["listings"].read_bytes()
     session = WorkbookSession("listings", tmp_path)
     original = session.query_workbook({"filters": {"Listing ID": "LST-5001"}}).payload["rows"][0]
+    before_stage = session.active_path.read_bytes()
+    version_before_stage = session.describe_workbook().payload["version"]
 
     staged = session.stage_mutation(
         {"operation": "update", "target_id": "LST-5001", "values": {"List Price": 351001}}
     )
+    assert staged.payload["status"] == "confirmation_required"
+    assert staged.payload["before"] == {"List Price": 351000}
+    assert staged.payload["after"] == {"List Price": 351001}
+    assert session.active_path.read_bytes() == before_stage
+    assert session.describe_workbook().payload["version"] == version_before_stage
+
     denied = session.commit_mutation({"stage_id": "not-the-stage"})
     committed = session.commit_mutation({"stage_id": staged.payload["stage_id"]})
     changed = session.query_workbook({"filters": {"Listing ID": "LST-5001"}}).payload["rows"][0]
-
-    assert staged.payload["status"] == "confirmation_required"
     assert denied.payload["error_code"] == "confirmation_required"
     assert committed.payload["verified"] is True
     assert original["List Price"] == 351000
     assert changed["List Price"] == 351001
     assert SOURCES["listings"].read_bytes() == source_bytes
+
+
+def test_stage_rejects_malformed_or_unsupported_mutations(tmp_path: Path) -> None:
+    session = WorkbookSession("campaigns", tmp_path)
+
+    malformed = session.stage_mutation([])
+    unsupported = session.stage_mutation(
+        {"operation": "rename", "target_id": "CMP-1001", "values": {}}
+    )
+    empty_target = session.stage_mutation(
+        {"operation": "update", "target_id": "", "values": {"Budget Allocated": 1}}
+    )
+    whitespace_target = session.stage_mutation(
+        {"operation": "update", "target_id": " ", "values": {"Budget Allocated": 1}}
+    )
+    changed_stable_id = session.stage_mutation(
+        {"operation": "update", "target_id": "CMP-8001", "values": {"Campaign ID": "CMP-9000"}}
+    )
+    listings = WorkbookSession("listings", tmp_path / "listings")
+    active_listing = listings.query_workbook({"filters": {"Listing Status": "Active"}}).payload[
+        "rows"
+    ][0]
+    sold_without_sale_price = listings.stage_mutation(
+        {
+            "operation": "update",
+            "target_id": active_listing["Listing ID"],
+            "values": {"Listing Status": "Sold"},
+        }
+    )
+
+    assert malformed.payload == {"error_code": "invalid_mutation"}
+    assert unsupported.payload == {"error_code": "invalid_mutation"}
+    assert empty_target.payload == {"error_code": "invalid_mutation"}
+    assert whitespace_target.payload == {"error_code": "invalid_mutation"}
+    assert changed_stable_id.payload == {"error_code": "stable_id_immutable"}
+    assert sold_without_sale_price.payload == {"error_code": "missing_sale_price"}
+
+
+def test_insert_and_delete_are_reviewed_before_they_change_a_session_workbook(
+    tmp_path: Path,
+) -> None:
+    source_bytes = SOURCES["campaigns"].read_bytes()
+    insert_session = WorkbookSession("campaigns", tmp_path / "insert")
+    template = insert_session.query_workbook(
+        {"filters": {"Campaign ID": "CMP-8001"}}
+    ).payload["rows"][0]
+    inserted_row = {**template, "Campaign ID": "CMP-9999", "Campaign Name": "New campaign"}
+    before_insert = insert_session.active_path.read_bytes()
+
+    inserted = insert_session.stage_mutation(
+        {"operation": "insert", "target_id": "CMP-9999", "values": inserted_row}
+    )
+
+    assert inserted.payload["status"] == "confirmation_required"
+    assert inserted.payload["before"] is None
+    assert inserted.payload["after"]["Campaign ID"] == "CMP-9999"
+    assert insert_session.active_path.read_bytes() == before_insert
+    assert SOURCES["campaigns"].read_bytes() == source_bytes
+
+    committed_insert = insert_session.commit_mutation({"stage_id": inserted.payload["stage_id"]})
+    assert committed_insert.payload["verified"] is True
+    assert insert_session.query_workbook({"filters": {"Campaign ID": "CMP-9999"}}).payload[
+        "count"
+    ] == 1
+
+    delete_session = WorkbookSession("campaigns", tmp_path / "delete")
+    deleted = delete_session.stage_mutation(
+        {"operation": "delete", "target_id": "CMP-8001", "values": {}}
+    )
+
+    assert deleted.payload["before"]["Campaign ID"] == "CMP-8001"
+    assert deleted.payload["after"] is None
+    assert delete_session.query_workbook({"filters": {"Campaign ID": "CMP-8001"}}).payload[
+        "count"
+    ] == 1
+
+    committed_delete = delete_session.commit_mutation({"stage_id": deleted.payload["stage_id"]})
+    assert committed_delete.payload["verified"] is True
+    assert delete_session.query_workbook({"filters": {"Campaign ID": "CMP-8001"}}).payload[
+        "count"
+    ] == 0
 
 
 def test_tool_executor_only_exposes_the_session_contract(tmp_path: Path) -> None:
