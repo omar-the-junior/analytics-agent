@@ -1,0 +1,91 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "Segoe UI Mono", monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --background: #f7f9f7;
+  --foreground: #18211d;
+  --card: #ffffff;
+  --card-foreground: #18211d;
+  --popover: #ffffff;
+  --popover-foreground: #18211d;
+  --primary: #176b5b;
+  --primary-foreground: #ffffff;
+  --secondary: #edf3ef;
+  --secondary-foreground: #233b32;
+  --muted: #eef3ef;
+  --muted-foreground: #5d6a64;
+  --accent: #e9f0f8;
+  --accent-foreground: #244765;
+  --destructive: #b83b32;
+  --border: #dce4df;
+  --input: #dce4df;
+  --ring: #176b5b;
+  --radius: 0.7rem;
+}
+
+.dark {
+  --background: #111a16;
+  --foreground: #eef4ef;
+  --card: #18251f;
+  --card-foreground: #eef4ef;
+  --popover: #18251f;
+  --popover-foreground: #eef4ef;
+  --primary: #66b5a4;
+  --primary-foreground: #0c1813;
+  --secondary: #26362e;
+  --secondary-foreground: #e0ece3;
+  --muted: #243129;
+  --muted-foreground: #a9bbb0;
+  --accent: #253c50;
+  --accent-foreground: #d9ebfb;
+  --destructive: #ee8d83;
+  --border: #34463b;
+  --input: #34463b;
+  --ring: #66b5a4;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-sans);
+  }
+
+  button,
+  input,
+  textarea {
+    font: inherit;
+  }
+}
