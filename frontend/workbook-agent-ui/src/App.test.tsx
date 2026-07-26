@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import App from "@/App"
 import { ThemeProvider } from "@/components/theme-provider"
+import { SESSION_STORAGE_KEY } from "@/demo/sessions"
 
 const configuration = {
   provider: "local",
@@ -29,12 +30,21 @@ function renderApp() {
   )
 }
 
+async function startMarketingChat(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "Start a new chat with Marketing Campaigns.xlsx" }))
+}
+
+async function startRealEstateChat(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "Start a new chat with Real Estate Listings.xlsx" }))
+}
+
 async function submitPreparedPrompt(user: ReturnType<typeof userEvent.setup>, prompt: string) {
   await user.click(screen.getByRole("button", { name: prompt }))
 }
 
 describe("workbook assistant demo", () => {
   beforeEach(() => {
+    localStorage.clear()
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => configuration }))
   })
 
@@ -44,24 +54,73 @@ describe("workbook assistant demo", () => {
     localStorage.clear()
   })
 
-  it("switches workbooks with keyboard navigation and shows source-specific prompts", async () => {
+  it("shows a source chooser before creating an unsaved chat draft", async () => {
     const user = userEvent.setup()
     renderApp()
 
-    const realEstateTab = screen.getByRole("tab", { name: /real estate listings/i })
-    realEstateTab.focus()
-    await user.keyboard("{ArrowRight}")
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Choose a source to begin")
+    expect(screen.getByRole("button", { name: "Start a new chat with Real Estate Listings.xlsx" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Start a new chat with Marketing Campaigns.xlsx" })).toBeInTheDocument()
 
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Marketing Campaigns")
+    await waitFor(() => expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull())
+
+    await startRealEstateChat(user)
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Real Estate Listings.xlsx")
+    expect(screen.getByRole("button", { name: "Show me a listing status overview." })).toBeInTheDocument()
+    expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull()
+  })
+
+  it("loads three populated, deletable example conversations on demand", async () => {
+    const user = userEvent.setup()
+    renderApp()
+
+    await user.click(screen.getByRole("button", { name: "Load 3 example chats" }))
+
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Real Estate Listings.xlsx")
+    expect(screen.getByText("Why should I focus on Sold listings for price analysis?")).toBeInTheDocument()
+    expect(
+      screen.getByText(/Sold listings have completed Sale Price values/i)
+    ).toBeInTheDocument()
+    await waitFor(() => expect(localStorage.getItem(SESSION_STORAGE_KEY)).not.toBeNull())
+    expect(screen.getByRole("button", { name: "Delete chat titled Channel performance review" })).toBeInTheDocument()
+  })
+
+  it("lets the user choose a workbook, then start a new source-specific chat", async () => {
+    const user = userEvent.setup()
+    renderApp()
+
+    await startMarketingChat(user)
+
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Marketing Campaigns.xlsx")
     expect(screen.getByRole("button", { name: "Which channel has the highest aggregate ROAS?" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Change CMP-8002's Budget Allocated to $30,000." })).toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: "Show me a listing status overview." })).not.toBeInTheDocument()
+  })
+
+  it("deletes a saved chat after confirmation and keeps an unsaved replacement draft", async () => {
+    const user = userEvent.setup()
+    renderApp()
+
+    await startRealEstateChat(user)
+    await submitPreparedPrompt(user, "Show me a listing status overview.")
+    await screen.findByText("316 Active · 211 Pending · 473 Sold")
+    await user.click(screen.getByRole("button", { name: "Start a new chat" }))
+    await user.click(screen.getByRole("button", { name: "Delete chat titled Show me a listing status overview." }))
+
+    const dialog = await screen.findByRole("alertdialog", { name: "Delete this chat?" })
+    expect(within(dialog).getByText(/will be removed from this device/i)).toBeInTheDocument()
+    await user.click(within(dialog).getByRole("button", { name: "Delete chat" }))
+
+    await waitFor(() => {
+      expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull()
+    })
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Choose a source to begin")
   })
 
   it("returns the verified listing-status overview", async () => {
     const user = userEvent.setup()
     renderApp()
 
+    await startRealEstateChat(user)
     await submitPreparedPrompt(user, "Show me a listing status overview.")
 
     expect(await screen.findByText("316 Active · 211 Pending · 473 Sold")).toBeInTheDocument()
@@ -73,7 +132,7 @@ describe("workbook assistant demo", () => {
     const user = userEvent.setup()
     renderApp()
 
-    await user.click(screen.getByRole("tab", { name: /marketing campaigns/i }))
+    await startMarketingChat(user)
     await submitPreparedPrompt(user, "Which channel has the highest aggregate ROAS?")
 
     expect(await screen.findByText("Email has the highest aggregate ROAS at 12.99×.")).toBeInTheDocument()
@@ -86,7 +145,7 @@ describe("workbook assistant demo", () => {
     const user = userEvent.setup()
     renderApp()
 
-    await user.click(screen.getByRole("tab", { name: /marketing campaigns/i }))
+    await startMarketingChat(user)
     await submitPreparedPrompt(user, "Change CMP-8002's Budget Allocated to $30,000.")
 
     expect((await screen.findAllByText("CMP-8002")).length).toBeGreaterThan(0)
@@ -96,7 +155,6 @@ describe("workbook assistant demo", () => {
     await user.click(screen.getByRole("button", { name: "Review demo change" }))
     const dialog = await screen.findByRole("alertdialog", { name: "Confirm this demo change?" })
     expect(within(dialog).getByText(/frontend demo state only/i)).toBeInTheDocument()
-    expect(document.activeElement).toBeInTheDocument()
 
     await user.click(within(dialog).getByRole("button", { name: "Confirm demo change" }))
     expect(await screen.findByText("Demo change confirmed; no workbook was written.")).toBeInTheDocument()
@@ -108,10 +166,11 @@ describe("workbook assistant demo", () => {
     renderApp()
 
     await waitFor(() => expect(screen.getByText("API offline")).toBeInTheDocument())
+    await startRealEstateChat(user)
     await user.type(screen.getByRole("textbox", { name: "Ask the workbook assistant" }), "Summarize every city")
     await user.click(screen.getByRole("button", { name: "Send" }))
 
     expect(await screen.findByText(/agent endpoint is not connected for arbitrary prompts/i)).toBeInTheDocument()
-    expect(screen.getByText("Demo works while API is offline")).toBeInTheDocument()
+    expect(screen.getByText("Demo mode")).toBeInTheDocument()
   })
 })

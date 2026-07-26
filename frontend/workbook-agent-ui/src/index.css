@@ -74,6 +74,12 @@
 }
 
 @layer base {
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+
   * {
     @apply border-border;
   }
@@ -81,6 +87,7 @@
   body {
     @apply bg-background text-foreground;
     font-family: var(--font-sans);
+    overflow: hidden;
   }
 
   button,
