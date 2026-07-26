@@ -298,8 +298,8 @@ class WorkbookSession:
             candidate.unlink(missing_ok=True)
             return ToolResult(status="rejected", payload={"error_code": "stable_id_not_found"})
         workbook.save(candidate)
-        verified = self._verify(stage, candidate)
-        if not verified:
+        verification = self._verify(stage, candidate)
+        if verification is None:
             candidate.unlink(missing_ok=True)
             return ToolResult(
                 status="rejected", payload={"error_code": "artifact_verification_failed"}
@@ -314,19 +314,74 @@ class WorkbookSession:
                 "version": self._version,
                 "verified": True,
                 "stable_id": stage.target_id,
+                "verification": verification,
             },
         )
 
-    def _verify(self, stage: StagedMutation, candidate: Path) -> bool:
-        frame = pd.read_excel(candidate)
+    def _verify(self, stage: StagedMutation, candidate: Path) -> dict[str, int] | None:
+        """Reopen an artifact and prove the authorized diff is its only data change."""
+        before_book = load_workbook(self._active, data_only=False)
+        candidate_book = load_workbook(candidate, data_only=False)
+        before_sheet = before_book.active
+        candidate_sheet = candidate_book.active
+        before_headers = {cell.value: cell.column for cell in before_sheet[1]}
+        candidate_headers = {cell.value: cell.column for cell in candidate_sheet[1]}
         identifier = ID_COLUMNS[self.workbook]
-        matches = frame.loc[frame[identifier].astype(str) == stage.target_id]
+        if before_headers != candidate_headers or identifier not in before_headers:
+            return None
+
+        def rows_by_id(sheet: Any, headers: dict[Any, int]) -> dict[str, dict[Any, Any]]:
+            return {
+                str(sheet.cell(row, headers[identifier]).value): {
+                    name: sheet.cell(row, column).value for name, column in headers.items()
+                }
+                for row in range(2, sheet.max_row + 1)
+            }
+
+        before_rows = rows_by_id(before_sheet, before_headers)
+        candidate_rows = rows_by_id(candidate_sheet, candidate_headers)
+        before_row_count = before_sheet.max_row - 1
+        candidate_row_count = candidate_sheet.max_row - 1
+        if len(before_rows) != before_row_count or len(candidate_rows) != candidate_row_count:
+            return None
+        row_delta = 1 if stage.operation == "insert" else -1 if stage.operation == "delete" else 0
+        expected_count = before_row_count + row_delta
+        if candidate_row_count != expected_count:
+            return None
         if stage.operation == "delete":
-            return matches.empty
-        if len(matches) != 1 or stage.after is None:
-            return False
-        observed = {key: _value(value) for key, value in matches.iloc[0].to_dict().items()}
-        return all(observed.get(key) == value for key, value in stage.after.items())
+            if stage.target_id in candidate_rows:
+                return None
+        elif stage.operation == "insert":
+            if candidate_rows.get(stage.target_id) != stage.after:
+                return None
+        elif stage.target_id not in before_rows or stage.target_id not in candidate_rows:
+            return None
+        else:
+            for column, before_value in before_rows[stage.target_id].items():
+                expected = stage.values[column] if column in stage.values else before_value
+                if candidate_rows[stage.target_id].get(column) != expected:
+                    return None
+
+        unchanged_ids = set(before_rows) & set(candidate_rows) - {stage.target_id}
+        if any(before_rows[row_id] != candidate_rows[row_id] for row_id in unchanged_ids):
+            return None
+        formula_row_ids = unchanged_ids | (
+            {stage.target_id} if stage.operation == "update" else set()
+        )
+        preserved_formula_cells = sum(
+            1
+            for row_id in formula_row_ids
+            for column, before_value in before_rows[row_id].items()
+            if isinstance(before_value, str)
+            and before_value.startswith("=")
+            and candidate_rows[row_id].get(column) == before_value
+        )
+        return {
+            "expected_row_count": expected_count,
+            "observed_row_count": candidate_row_count,
+            "unchanged_rows_verified": len(unchanged_ids),
+            "preserved_formula_cells": preserved_formula_cells,
+        }
 
 
 class WorkbookToolExecutor:

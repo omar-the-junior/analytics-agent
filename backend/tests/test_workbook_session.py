@@ -4,6 +4,7 @@ from pathlib import Path
 
 from app.agent_loop import AgentLoop, ModelMessage, ToolCall
 from app.workbook_session import SOURCES, WorkbookSession, WorkbookToolExecutor
+from openpyxl import load_workbook
 
 
 def test_describe_and_query_preserve_the_supplied_source(tmp_path: Path) -> None:
@@ -101,6 +102,56 @@ def test_stage_requires_exact_commit_and_verifies_artifact(tmp_path: Path) -> No
     assert SOURCES["listings"].read_bytes() == source_bytes
 
 
+def test_commit_reports_verified_artifact_postconditions_and_preserves_formulas(
+    tmp_path: Path,
+) -> None:
+    session = WorkbookSession("listings", tmp_path)
+    before_version = session.describe_workbook().payload["version"]
+    before_rows = session.query_workbook({"aggregate": "count"}).payload["count"]
+    workbook = load_workbook(session.active_path)
+    sheet = workbook.active
+    headers = {cell.value: cell.column for cell in sheet[1]}
+    sheet.cell(2, headers["Bedrooms"]).value = "=1+2"
+    workbook.save(session.active_path)
+
+    staged = session.stage_mutation(
+        {"operation": "update", "target_id": "LST-5001", "values": {"List Price": 351001}}
+    )
+    committed = session.commit_mutation({"stage_id": staged.payload["stage_id"]})
+
+    assert committed.status == "ok"
+    assert committed.payload["version"] == before_version + 1
+    assert committed.payload["verification"] == {
+        "expected_row_count": before_rows,
+        "observed_row_count": before_rows,
+        "unchanged_rows_verified": before_rows - 1,
+        "preserved_formula_cells": 1,
+    }
+    output = load_workbook(tmp_path / committed.payload["artifact"], data_only=False)
+    assert output.active.cell(2, headers["Bedrooms"]).value == "=1+2"
+
+
+def test_stale_or_missing_authorization_does_not_advance_the_session_version(
+    tmp_path: Path,
+) -> None:
+    session = WorkbookSession("campaigns", tmp_path)
+    staged = session.stage_mutation(
+        {"operation": "update", "target_id": "CMP-8001", "values": {"Budget Allocated": 1}}
+    )
+    version_before = session.describe_workbook().payload["version"]
+    missing = session.commit_mutation({})
+    assert missing.payload == {"error_code": "confirmation_required"}
+    assert session.describe_workbook().payload["version"] == version_before
+
+    workbook = load_workbook(session.active_path)
+    workbook.active.cell(2, 1).value = "unrelated concurrent edit"
+    workbook.save(session.active_path)
+    stale = session.commit_mutation({"stage_id": staged.payload["stage_id"]})
+
+    assert stale.payload == {"error_code": "stale_stage"}
+    assert session.describe_workbook().payload["version"] == version_before
+
+
 def test_stage_rejects_malformed_or_unsupported_mutations(tmp_path: Path) -> None:
     session = WorkbookSession("campaigns", tmp_path)
 
@@ -147,6 +198,7 @@ def test_insert_and_delete_are_reviewed_before_they_change_a_session_workbook(
     ).payload["rows"][0]
     inserted_row = {**template, "Campaign ID": "CMP-9999", "Campaign Name": "New campaign"}
     before_insert = insert_session.active_path.read_bytes()
+    insert_row_count = insert_session.query_workbook({"aggregate": "count"}).payload["count"]
 
     inserted = insert_session.stage_mutation(
         {"operation": "insert", "target_id": "CMP-9999", "values": inserted_row}
@@ -160,11 +212,21 @@ def test_insert_and_delete_are_reviewed_before_they_change_a_session_workbook(
 
     committed_insert = insert_session.commit_mutation({"stage_id": inserted.payload["stage_id"]})
     assert committed_insert.payload["verified"] is True
+    assert committed_insert.payload["verification"] == {
+        "expected_row_count": insert_row_count + 1,
+        "observed_row_count": insert_row_count + 1,
+        "unchanged_rows_verified": insert_row_count,
+        "preserved_formula_cells": 0,
+    }
+    insert_artifact = load_workbook(tmp_path / "insert" / committed_insert.payload["artifact"])
+    assert any(cell.value == "CMP-9999" for cell in insert_artifact.active["A"])
     assert insert_session.query_workbook({"filters": {"Campaign ID": "CMP-9999"}}).payload[
         "count"
     ] == 1
+    assert SOURCES["campaigns"].read_bytes() == source_bytes
 
     delete_session = WorkbookSession("campaigns", tmp_path / "delete")
+    delete_row_count = delete_session.query_workbook({"aggregate": "count"}).payload["count"]
     deleted = delete_session.stage_mutation(
         {"operation": "delete", "target_id": "CMP-8001", "values": {}}
     )
@@ -177,9 +239,18 @@ def test_insert_and_delete_are_reviewed_before_they_change_a_session_workbook(
 
     committed_delete = delete_session.commit_mutation({"stage_id": deleted.payload["stage_id"]})
     assert committed_delete.payload["verified"] is True
+    assert committed_delete.payload["verification"] == {
+        "expected_row_count": delete_row_count - 1,
+        "observed_row_count": delete_row_count - 1,
+        "unchanged_rows_verified": delete_row_count - 1,
+        "preserved_formula_cells": 0,
+    }
+    delete_artifact = load_workbook(tmp_path / "delete" / committed_delete.payload["artifact"])
+    assert all(cell.value != "CMP-8001" for cell in delete_artifact.active["A"])
     assert delete_session.query_workbook({"filters": {"Campaign ID": "CMP-8001"}}).payload[
         "count"
     ] == 0
+    assert SOURCES["campaigns"].read_bytes() == source_bytes
 
 
 def test_tool_executor_only_exposes_the_session_contract(tmp_path: Path) -> None:
