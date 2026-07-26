@@ -6,11 +6,16 @@ as proof that the 72-case baseline has been implemented or passed.
 """
 
 import json
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 REPORT_PATH = REPOSITORY_ROOT / "artifacts" / "submission-proof.json"
+sys.path.insert(0, str(REPOSITORY_ROOT / "backend"))
+sys.path.insert(0, str(REPOSITORY_ROOT))
+
+from evaluation.baseline import evaluate  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -56,17 +61,17 @@ def no_agent_framework_dependencies() -> Check:
 
 def implementation_readiness() -> Check:
     """Keep release status honest until runnable cases and workbook tools exist."""
-    case_files = list((REPOSITORY_ROOT / "evaluation").glob("cases/**/*.json"))
-    tool_files = list((REPOSITORY_ROOT / "backend" / "app").glob("*workbook*.py"))
-    ready = bool(case_files and tool_files)
+    case_module = REPOSITORY_ROOT / "evaluation" / "baseline.py"
+    tool_module = REPOSITORY_ROOT / "backend" / "app" / "workbook_session.py"
+    ready = case_module.is_file() and tool_module.is_file()
     return Check(
         "baseline release readiness",
         ready,
         (
-            "runnable evaluation cases and workbook-tool implementation are present"
+            "runnable evaluation corpus and WorkbookSession implementation are present"
             if ready
             else (
-                "not release-ready: runnable evaluation cases and workbook-tool "
+                "not release-ready: runnable evaluation corpus and WorkbookSession "
                 "implementation are required"
             )
         ),
@@ -85,19 +90,21 @@ def main() -> int:
         no_agent_framework_dependencies(),
         implementation_readiness(),
     ]
-    release_ready = all(check.passed for check in checks)
+    baseline = evaluate()
+    release_ready = all(check.passed for check in checks) and baseline["release_ready"]
     report = {
         "schema_version": "1.0",
         "release_ready": release_ready,
         "checks": [asdict(check) for check in checks],
         "next_action": (
-            "Run the full baseline evaluator and attach its report."
+            "Attach the generated full baseline report to the release evidence."
             if release_ready
             else (
-                "Implement workbook tools and runnable baseline cases; do not represent "
-                "this repository as submission-ready."
+                "Fix failing baseline cases or release checks; do not represent this repository "
+                "as submission-ready."
             )
         ),
+        "baseline_evaluation": baseline,
     }
     REPORT_PATH.parent.mkdir(exist_ok=True)
     REPORT_PATH.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

@@ -38,9 +38,9 @@ uv run pytest
 uv run python scripts/verify_submission.py
 ```
 
-The final command creates `artifacts/submission-proof.json`. It fails closed until both
-runnable workbook tools and the 72-case baseline corpus exist; a contract or passing unit
-tests alone is not a passing evaluation. See [the evidence checklist](docs/submission-evidence.md)
+The final command creates `artifacts/submission-proof.json`, including the deterministic
+72-case evaluation report. It fails closed if a release threshold does not pass; a contract or
+passing unit tests alone is not a passing evaluation. See [the evidence checklist](docs/submission-evidence.md)
 and [the live-defense runbook](docs/live-defense.md) for the required final report, demo,
 and limitation statement.
 
@@ -49,7 +49,8 @@ and limitation statement.
 - `GET /api/health`
 - `GET /api/agent/configuration`
 
-The current endpoints expose safe configuration only. Workbook mutation endpoints and the
-runnable baseline corpus are not implemented yet, so this commit is not submission-ready.
-Their required staged-diff and explicit-confirmation behavior is recorded in
+The current endpoints expose safe configuration only. The backend now includes a bounded
+`WorkbookSession` executor and deterministic baseline evaluator; public run/session endpoints
+remain part of the separate frontend integration work. The required staged-diff and explicit-
+confirmation behavior is recorded in
 [`DECISIONS.md`](DECISIONS.md) and [`docs/backend-api-contract.md`](docs/backend-api-contract.md).

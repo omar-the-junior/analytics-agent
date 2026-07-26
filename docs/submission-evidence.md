@@ -13,22 +13,19 @@ uv run pytest
 uv run python scripts/verify_submission.py
 ```
 
-The final command writes `artifacts/submission-proof.json`. Exit code `0` means the
-repository-level checks and release-readiness prerequisites passed. Exit code `2` means
-the report is intentionally blocking release; inspect its `checks` and `next_action`.
-
-When the runnable baseline evaluator exists, add its exact full-corpus invocation and
-the generated report link here. Do not substitute the contract file or a unit-test run
-for a 72-case evaluation result.
+The final command writes `artifacts/submission-proof.json`. It executes the full deterministic
+72-case Baseline Evaluation Corpus and includes the commit, per-workbook and per-operation
+outcomes, hard-gate failures, latency, turns, tool calls, and advisory-judge state. Exit code
+`0` means all D-007 release thresholds passed; exit code `2` blocks release.
 
 ## Evidence matrix
 
 | Assignment requirement | Required proof | Current evidence | Release gate |
 | --- | --- | --- | --- |
-| Python and custom tools | Dependency/import review plus executable workbook-tool tests | `pyproject.toml`, backend tests | Workbook tools must be implemented and tested. |
+| Python and custom tools | Dependency/import review plus executable WorkbookSession tests | `pyproject.toml`, backend tests | Workbook tools must be implemented and tested. |
 | Free LLM option | Configuration and a safe provider-boundary test | `backend/app/settings.py`, `backend/app/agent_loop.py` | A configured, documented free-provider path must complete the demo. |
-| Both supplied workbooks | Separate read/query and mutation cases for each workbook | Source `.xlsx` fixtures and evaluation contract | 36 runnable cases per workbook. |
-| Read, query, insert, modify, delete | Deterministic result/artifact, trace, interaction, and response assertions | `evaluation/contract.json` defines the target corpus | Every required operation must pass; every mutation requires confirmation. |
+| Both supplied workbooks | Separate read/query and mutation cases for each workbook | Executable baseline corpus | 36 runnable cases per workbook. |
+| Read, query, insert, modify, delete | Deterministic result/artifact, trace, interaction, and response assertions | `evaluation/baseline.py` and `WorkbookSession` | Every required operation must pass; every mutation requires confirmation. |
 | Public README and decision record | Fresh-clone commands and consequential decisions with tradeoffs | `README.md`, `DECISIONS.md` | Commands and links must work from a clean checkout. |
 | Live defense | A demonstration sequence plus an evidence-backed answer for each choice | `docs/live-defense.md` | Never claim a result that cannot be reproduced during the call. |
 
@@ -48,7 +45,7 @@ Before submission, attach or link all of the following to the release/commit:
 
 ## Current limitation
 
-The repository currently contains the evaluation contract and a constrained agent-loop
-prototype, but not runnable workbook tools or case definitions. It is therefore **not
-submission-ready**. The proof command reports this as a release blocker instead of
-manufacturing a baseline result.
+The baseline is deterministic and model-free: it proves the bounded WorkbookSession contract,
+not that a live LLM will select the right tool sequence for every natural-language request. Any
+live-model comparison must remain separately reproducible and preserve the deterministic hard
+gates; the advisory independent LLM judge is not a release authority.
