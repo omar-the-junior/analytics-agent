@@ -17,4 +17,16 @@ def test_agent_configuration_exposes_guardrails() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["write_confirmation_required"] is True
-    assert "commit_staged_workbook" in payload["available_tools"]
+    assert payload["available_tools"] == [
+        "describe_workbook",
+        "query_workbook",
+        "stage_mutation",
+        "commit_mutation",
+    ]
+    assert payload["workbook_mutation_policy"] == {
+        "confirmation_required_for": ["insert", "update", "delete"],
+        "authorization": "explicit_user_confirmation_after_exact_diff",
+        "target_identity": "stable_id_only",
+        "source_preservation": "source_workbook_is_never_overwritten",
+        "output_artifact": "new_artifact_reopened_and_verified",
+    }
