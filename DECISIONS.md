@@ -79,6 +79,25 @@ This is the evolving decision record for the workbook-agent backend. It captures
 - **Not decided here:** Batch-confirmation ergonomics, confirmation expiry, and any risk-tiered exception. They are out of scope unless a future evaluation demonstrates material user-effort harm without a safety regression.
 - **Reconsider if:** Baseline evaluation or live-review feedback shows that the universal confirmation turn materially prevents reasonable-request completion, and a replacement policy preserves exact authorization and zero unintended changes.
 
+## D-009: Use a bounded NVIDIA-backed action loop
+
+- **Status:** Accepted on 2026-07-26
+- **Decision:** The baseline agent uses the hosted free model `nvidia/nemotron-3-nano-30b-a3b` through a provider-neutral `ModelClient` with one NVIDIA OpenAI-compatible adapter. Each model iteration returns a Pydantic-validated JSON action: either a final answer or an ordered batch of tool calls. The deterministic tool boundary remains authoritative. Tool calls in a batch execute serially in declared order; each result is recorded and returned before the next model iteration. The loop permits at most six model iterations and has no separate tool-call cap. One malformed or invalid action gets a repair prompt; a second ends the run. Recoverable tool errors return to the model while iteration budget remains, while policy rejections and required clarifications stop directly.
+- **Evidence:** The assignment permits hosted free LLMs and requires custom Python tools with no agent framework. The selected NVIDIA API is OpenAI-compatible. The baseline evaluation contract requires deterministic traces, safe failure behavior, and defensible limits. The user chose the provider, interface boundary, JSON action protocol, serial batches, six-iteration limit, and repair behavior during the Wayfinder interview.
+- **Tradeoff:** A JSON protocol and serial execution may be less feature-rich or fast than provider-native tool calls and parallel reads. The small adapter and explicit traces make the system easier to fake in tests, swap later, and explain during the live review.
+- **Reconsider if:** The 72-case baseline shows a reasonable request cannot complete within six model iterations, malformed-output recovery materially lowers Safe Task Success, or measured read-only parallelism earns its added complexity without weakening determinism.
+
+## D-010: Enforce a single-workbook, bounded execution policy
+
+- **Status:** Accepted on 2026-07-26
+- **Decision:** Each conversation binds to exactly one Session Workbook when it begins; the model cannot select another workbook, path, shell command, or network tool. The agent may invoke only `describe_workbook`, `query_workbook`, `stage_mutation`, and `commit_mutation`. Initial workload limits are a 5 MiB workbook, 10,000 populated rows, 50 columns, 500,000 populated cells, 100 returned detail rows, 25 returned columns, 32 KiB serialized tool output, 64 KiB model action, six model iterations, one malformed-action repair, a 30-second model-call timeout, and a 210-second run timeout. This retains D-009's deliberate absence of a separate tool-call count cap.
+- **Trace and security:** Record ordered, schema-versioned semantic events with a run identifier, iteration, safe policy/budget outcome, tool name/status, and terminal outcome. Never trace secrets, API keys, raw prompts, workbook values, filesystem paths, or raw provider errors. Treat user input, workbook content, and tool results as untrusted data rather than instructions.
+- **Recovery:** Clarification and policy rejection stop immediately. One malformed model action gets a repair; recoverable tool errors return to the model while time remains; provider, budget, and internal failures stop safely. Candidate verification failures leave the active workbook version unchanged.
+- **Error taxonomy:** `invalid_model_action`, `tool_validation_error`, `policy_rejected`, `clarification_required`, `recoverable_tool_error`, `provider_error`, `budget_exhausted`, `candidate_verification_failed`, and `internal_error`.
+- **Evidence:** Both supplied workbooks have 1,000 data rows and 11 columns, and the agent's hard gates prohibit forbidden tool, path, shell, and network actions. The user explicitly chose the one-workbook-per-conversation boundary.
+- **Tradeoff:** Cross-workbook comparisons and larger data artifacts are rejected in the baseline. This reduces feature breadth but makes the Session Workbook boundary, prompt-injection defense, resource behavior, and live-review evidence deterministic.
+- **Reconsider if:** Baseline evaluation shows a reasonable in-scope request cannot complete within these bounds, or a carefully designed multi-workbook feature can preserve equally strong session isolation and deterministic evaluation.
+
 ## What I would do differently with more time
 
 This section will be completed as implementation and evaluation expose limits that cannot responsibly be addressed within the assignment window.

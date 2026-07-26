@@ -25,6 +25,7 @@ class AgentConfigurationResponse(BaseModel):
     workbook_mutation_policy: WorkbookMutationPolicy = Field(
         default_factory=WorkbookMutationPolicy
     )
+    conversation_scope: str = "exactly_one_session_workbook"
     available_tools: list[str] = Field(
         default_factory=lambda: [
             "describe_workbook",

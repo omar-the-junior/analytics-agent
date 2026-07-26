@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,6 +12,8 @@ class Settings(BaseSettings):
     frontend_origins: str = "http://localhost:5173"
     model_provider: str = "nvidia"
     model_name: str = "nvidia/nemotron-3-nano-30b-a3b"
+    nvidia_api_key: SecretStr | None = Field(default=None, validation_alias="NVIDIA_API_KEY")
+    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     require_write_confirmation: bool = True
 
     model_config = SettingsConfigDict(

@@ -30,3 +30,4 @@ def test_agent_configuration_exposes_guardrails() -> None:
         "source_preservation": "source_workbook_is_never_overwritten",
         "output_artifact": "new_artifact_reopened_and_verified",
     }
+    assert payload["conversation_scope"] == "exactly_one_session_workbook"
