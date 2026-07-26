@@ -98,6 +98,14 @@ This is the evolving decision record for the workbook-agent backend. It captures
 - **Tradeoff:** Cross-workbook comparisons and larger data artifacts are rejected in the baseline. This reduces feature breadth but makes the Session Workbook boundary, prompt-injection defense, resource behavior, and live-review evidence deterministic.
 - **Reconsider if:** Baseline evaluation shows a reasonable in-scope request cannot complete within these bounds, or a carefully designed multi-workbook feature can preserve equally strong session isolation and deterministic evaluation.
 
+## D-011: Use a backend-owned asynchronous frontend contract
+
+- **Status:** Accepted on 2026-07-26
+- **Decision:** The frontend starts a backend-owned run and receives its progress through a replayable SSE stream. `WorkbookSession` state and its bounded version history live only in backend memory for the API-process lifetime. A Staged Mutation pauses a run in `confirmation_required`; only a dedicated endpoint carrying the exact `stage_id` can authorize its commit. The frontend can cancel an active run, which terminates safely without a commit; verified output artifacts have no undo operation. Artifact references are opaque and session-scoped, with a separate download endpoint. Events have monotonic IDs and a bounded replay window. Failures use a user-safe structured envelope with `code`, `message`, `retryable`, `run_id`, and a correlation ID; raw provider, filesystem, and workbook internals stay server-side.
+- **Evidence:** The existing SPA is intentionally demo-only, whereas D-008 requires exact Staged Mutation authorization and D-010 requires bounded, redacted execution. The user selected SSE, process-lifetime sessions, dedicated confirmation, active-run-only cancellation, opaque artifacts, structured errors, and reconnect replay during the Wayfinder interview.
+- **Tradeoff:** SSE and a replay buffer add endpoint and lifecycle work, while process-local sessions do not survive restarts. In return, the separately developed frontend can render progress and recover from reconnects without receiving orchestration authority or sensitive backend details.
+- **Reconsider if:** Evaluation shows process restarts materially harm a reasonable in-scope workflow, or event-stream measurements show that the replay window fails to provide reliable frontend recovery.
+
 ## What I would do differently with more time
 
 This section will be completed as implementation and evaluation expose limits that cannot responsibly be addressed within the assignment window.

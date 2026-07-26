@@ -1,7 +1,7 @@
 # Workbook Agent
 
-A framework-free, Python-first spreadsheet agent workbench. The agent loop, tool registry,
-policy gates, and evaluation harness remain application code owned by this repository.
+A framework-free, Python-first spreadsheet-agent backend. The agent loop, workbook tools,
+policy gates, and evaluation harness are application code owned by this repository.
 
 ## Stack
 
@@ -28,11 +28,28 @@ pnpm dev
 
 The API runs at `http://localhost:8000`; the SPA runs at `http://localhost:5173`.
 
+## Verify submission evidence
+
+Before representing a commit as submission-ready, run:
+
+```powershell
+uv sync
+uv run pytest
+uv run python scripts/verify_submission.py
+```
+
+The final command creates `artifacts/submission-proof.json`. It fails closed until both
+runnable workbook tools and the 72-case baseline corpus exist; a contract or passing unit
+tests alone is not a passing evaluation. See [the evidence checklist](docs/submission-evidence.md)
+and [the live-defense runbook](docs/live-defense.md) for the required final report, demo,
+and limitation statement.
+
 ## Current API surface
 
 - `GET /api/health`
 - `GET /api/agent/configuration`
 
-The initial endpoints expose safe configuration only. Workbook mutation endpoints will be
-introduced with the staged-diff and explicit-confirmation design described in
-[`docs/research/agent-from-scratch-research.md`](docs/research/agent-from-scratch-research.md).
+The current endpoints expose safe configuration only. Workbook mutation endpoints and the
+runnable baseline corpus are not implemented yet, so this commit is not submission-ready.
+Their required staged-diff and explicit-confirmation behavior is recorded in
+[`DECISIONS.md`](DECISIONS.md) and [`docs/backend-api-contract.md`](docs/backend-api-contract.md).
