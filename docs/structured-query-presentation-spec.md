@@ -1,6 +1,6 @@
 # Structured Query and Presentation Specification
 
-**Status:** backend contract implemented; frontend presentation pending  
+**Status:** implemented and verified  
 **Owner:** any backend or frontend agent working on deterministic workbook results  
 **Last updated:** 2026-07-27
 
@@ -189,12 +189,12 @@ The confirmation dialog must reference the same preview and exact `stage_id`. It
 - [x] Specify and implement the currently approved calculations (`rows`, `count`, `sum`, `min`, `max`) with deterministic tests. Mean, median, grouped, and derived metrics remain deliberately unsupported until their domain semantics are added.
 - [x] Add an internal result-publication seam from `WorkbookToolExecutor` to `ApiRuntime`; do not put rows in trace events.
 - [x] Add the `workbook_result` SSE event and update the backend API contract and event schema.
-- [ ] Render `workbook_result` using a reusable typed table component in the frontend.
-- [ ] Replace JSON Staged Mutation previews with typed field-diff/row-preview tables.
+- [x] Render `workbook_result` using a reusable typed table component in the frontend.
+- [x] Replace JSON Staged Mutation previews with typed field-diff/row-preview tables.
 - [x] Update native tool definitions, `ACTION_INSTRUCTIONS`, and the runtime system prompt.
 - [x] Add backend contract, query determinism, and SSE tests for the implemented backend result kinds.
-- [ ] Add baseline evaluation cases for extrema, ranking, projection, grouped metrics, truncation, and mutation previews.
-- [ ] Run the full Python suite, frontend tests/typecheck/build, lint, and the Baseline Evaluation Corpus before marking this specification complete.
+- [x] Add baseline evaluation cases for extrema, ranking, projection, intentional rejection of unsupported grouped metrics, truncation, and mutation previews.
+- [x] Run the full Python suite, frontend tests/typecheck/build, lint, and the Baseline Evaluation Corpus before marking this specification complete.
 
 ## Handoff checklist for a new session
 

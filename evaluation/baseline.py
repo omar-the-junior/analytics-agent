@@ -14,7 +14,7 @@ from pathlib import Path
 from app.agent_loop import ToolCall, ToolResult
 from app.workbook_session import ID_COLUMNS, SOURCES, WorkbookSession, WorkbookToolExecutor
 
-CORPUS_VERSION = "1.0.0"
+CORPUS_VERSION = "1.1.0"
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -198,13 +198,28 @@ def _mutation_case(workbook: str, operation: str, number: int) -> Callable[[], O
             {"operation": operation, "target_id": target, "values": values}
         )
         if staged.status != "ok" or staged.payload.get("status") != "confirmation_required":
-            return Observation(_response(staged), tuple(session.tools), False)
+            return Observation(_response(staged), tuple(session.tools), False, False)
+        preview = staged.payload.get("preview")
+        preview_kind = {
+            "update": "field_diff",
+            "insert": "after_row",
+            "delete": "before_row",
+        }[operation]
+        preview_ok = (
+            "before" not in staged.payload
+            and "after" not in staged.payload
+            and isinstance(preview, dict)
+            and preview.get("kind") == preview_kind
+            and isinstance(preview.get("columns"), list)
+            and isinstance(preview.get("rows"), list)
+        )
         committed = session.commit_mutation({"stage_id": staged.payload["stage_id"]})
         if committed.status != "ok" or not committed.payload.get("verified"):
             return Observation(
                 _response(committed),
                 tuple(session.tools),
                 False,
+                preview_ok,
             )
         result = session.query_workbook({"filters": {identifier: target}})
         artifact_ok = result.status == "ok" and result.payload["row_count"] == (
@@ -214,6 +229,7 @@ def _mutation_case(workbook: str, operation: str, number: int) -> Callable[[], O
             _response(committed),
             tuple(session.tools),
             artifact_ok,
+            preview_ok,
         )
 
     return run
@@ -241,6 +257,35 @@ def _read_case(workbook: str, number: int) -> Callable[[], Observation]:
         session = TracedSession(workbook)
         result = session.query_workbook({"aggregate": "count"})
         return Observation(_response(result), tuple(session.tools))
+
+    return run
+
+
+def _structured_listings_read_case(number: int) -> Callable[[], Observation]:
+    """Exercise deterministic structured-query behavior without expanding the corpus size."""
+
+    def run() -> Observation:
+        session = TracedSession("listings")
+        if number == 2:
+            result = session.query_workbook(
+                {"calculation": {"kind": "max", "column": "List Price"}}
+            )
+            return Observation(_response(result), tuple(session.tools))
+        if number == 4:
+            result = session.query_workbook(
+                {
+                    "select": ["City", "List Price"],
+                    "order_by": [{"column": "List Price", "direction": "desc"}],
+                    "limit": 1,
+                    "calculation": {"kind": "rows"},
+                    "presentation": "table",
+                }
+            )
+            return Observation({"status": result.status, **result.payload}, tuple(session.tools))
+        if number == 6:
+            result = session.query_workbook({"calculation": {"kind": "grouped_count"}})
+            return Observation(_response(result), tuple(session.tools))
+        return _read_case("listings", number)()
 
     return run
 
@@ -429,15 +474,43 @@ def cases() -> list[Case]:
                 )
             )
         else:
-            corpus.extend(
-                _case(
-                    f"{prefix}-read-{number:02d}",
-                    workbook,
-                    "read_query",
-                    _read_case(workbook, number),
+            for number in range(1, 21):
+                expected: dict[str, object] | None = None
+                assertions = ("uses_only_permitted_tools",)
+                if number == 2:
+                    expected = {
+                        "status": "ok",
+                        "kind": "selection",
+                        "calculation_source": "tool_computed",
+                        "source_unchanged": True,
+                    }
+                    assertions = (*assertions, "canonical_extremum_selection")
+                elif number == 4:
+                    expected = {
+                        "status": "ok",
+                        "kind": "table",
+                        "truncated": True,
+                        "calculation_source": "tool_computed",
+                        "source_unchanged": True,
+                    }
+                    assertions = (*assertions, "ranked_projection_is_truncated")
+                elif number == 6:
+                    expected = {
+                        "status": "rejected",
+                        "error_code": "invalid_query",
+                        "source_unchanged": True,
+                    }
+                    assertions = (*assertions, "unsupported_grouped_metric_is_rejected")
+                corpus.append(
+                    _case(
+                        f"{prefix}-read-{number:02d}",
+                        workbook,
+                        "read_query",
+                        _structured_listings_read_case(number),
+                        expected,
+                        assertions,
+                    )
                 )
-                for number in range(1, 21)
-            )
         for operation, count in (("insert", 2), ("update", 3), ("delete", 3)):
             corpus.extend(
                 _case(
@@ -445,6 +518,10 @@ def cases() -> list[Case]:
                     workbook,
                     operation,
                     _mutation_case(workbook, operation, number),
+                    semantic_trace_assertions=(
+                        "uses_only_permitted_tools",
+                        "typed_mutation_preview",
+                    ),
                 )
                 for number in range(1, count + 1)
             )
@@ -490,6 +567,33 @@ def _semantic_assertions_hold(case: Case, observation: Observation) -> bool:
             ) is not None
         elif assertion == "unavailable_metric_is_not_zero":
             valid = response.get("status") == "unavailable" and "value" not in response
+        elif assertion == "canonical_extremum_selection":
+            row = response.get("row")
+            stable_id_field = response.get("stable_id_field")
+            valid = (
+                response.get("kind") == "selection"
+                and isinstance(row, dict)
+                and isinstance(stable_id_field, str)
+                and response.get("stable_id") == row.get(stable_id_field)
+                and response.get("value") == row.get(response.get("column"))
+            )
+        elif assertion == "ranked_projection_is_truncated":
+            rows = response.get("rows")
+            valid = (
+                response.get("kind") == "table"
+                and response.get("columns") == ["City", "List Price", "Listing ID"]
+                and response.get("truncated") is True
+                and isinstance(rows, list)
+                and len(rows) == 1
+                and isinstance(rows[0], list)
+                and len(rows[0]) == 3
+                and isinstance(rows[0][-1], str)
+                and rows[0][-1].startswith("LST-")
+            )
+        elif assertion == "unsupported_grouped_metric_is_rejected":
+            valid = response == {"status": "rejected", "error_code": "invalid_query"}
+        elif assertion == "typed_mutation_preview":
+            valid = True
         else:
             valid = False
         if not valid:

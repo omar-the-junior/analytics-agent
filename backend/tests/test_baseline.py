@@ -16,6 +16,25 @@ def test_real_estate_cases_declare_the_contract_and_emit_case_evidence() -> None
     assert result["evidence"]["postconditions"] is True
 
 
+def test_baseline_covers_structured_query_and_mutation_preview_contracts() -> None:
+    declared = {case.id: case for case in cases()}
+
+    assert "canonical_extremum_selection" in declared[
+        "real_estate-read-02"
+    ].semantic_trace_assertions
+    assert "ranked_projection_is_truncated" in declared[
+        "real_estate-read-04"
+    ].semantic_trace_assertions
+    assert "unsupported_grouped_metric_is_rejected" in declared[
+        "real_estate-read-06"
+    ].semantic_trace_assertions
+    assert all(
+        "typed_mutation_preview" in case.semantic_trace_assertions
+        for case in declared.values()
+        if case.category in {"insert", "update", "delete"}
+    )
+
+
 def test_marketing_cases_declare_campaign_metric_contracts_and_emit_evidence() -> None:
     marketing_cases = [case for case in cases() if case.workbook == "campaigns"]
 

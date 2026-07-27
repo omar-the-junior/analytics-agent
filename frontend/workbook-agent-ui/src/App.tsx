@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react"
 import ReactMarkdown from "react-markdown"
-import remarkGfm from "remark-gfm"
 import {
   Bot,
   BrainCircuit,
@@ -64,6 +63,17 @@ import {
   MessageScrollerViewport,
 } from "@/components/ui/message-scroller"
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker"
+import {
+  MutationPreview,
+  WorkbookResult,
+} from "@/components/workbook-data"
+import {
+  isRecord,
+  parseQueryResult,
+  parseStage,
+  type QueryResult,
+  type Stage,
+} from "@/lib/workbook-contract"
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api"
 
@@ -72,14 +82,13 @@ type Workbook = {
   name: string
   description: string
 }
-type Entry = { id: string; role: "user" | "assistant" | "system"; text: string }
-type Stage = {
-  stage_id: string
-  operation: string
-  stable_id: string
-  before: unknown
-  after: unknown
+type TextEntry = {
+  id: string
+  role: "user" | "assistant" | "system"
+  text: string
 }
+type ResultEntry = { id: string; role: "result"; result: QueryResult }
+type Entry = TextEntry | ResultEntry
 type ActiveSession = { id: string; workbook: Workbook }
 type Activity = {
   activity: string
@@ -120,25 +129,6 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new Error(error?.message ?? "The request could not be completed.")
   }
   return response.json() as Promise<T>
-}
-
-function ChangePreview({ stage }: { stage: Stage }) {
-  return (
-    <Alert className="mx-3 max-w-xl">
-      <ShieldCheck />
-      <AlertTitle>Review proposed {stage.operation}</AlertTitle>
-      <AlertDescription className="flex flex-col gap-3">
-        <span>Stable ID: {stage.stable_id}</span>
-        <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs text-foreground">
-          {JSON.stringify(
-            { before: stage.before, after: stage.after },
-            null,
-            2
-          )}
-        </pre>
-      </AlertDescription>
-    </Alert>
-  )
 }
 
 function formatDuration(milliseconds: number) {
@@ -212,21 +202,7 @@ export function AssistantMarkdown({ children }: { children: string }) {
             {codeChildren}
           </pre>
         ),
-        table: ({ children: tableChildren }) => (
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-left text-xs">
-              {tableChildren}
-            </table>
-          </div>
-        ),
-        th: ({ children: headerChildren }) => (
-          <th className="border-b p-2 font-semibold">{headerChildren}</th>
-        ),
-        td: ({ children: cellChildren }) => (
-          <td className="border-b p-2 align-top">{cellChildren}</td>
-        ),
       }}
-      remarkPlugins={[remarkGfm]}
     >
       {children}
     </ReactMarkdown>
@@ -262,8 +238,12 @@ export default function App() {
     return () => window.clearInterval(timer)
   }, [runId, startPending])
 
-  function append(role: Entry["role"], text: string) {
+  function append(role: TextEntry["role"], text: string) {
     setEntries((current) => [...current, { id: newId(), role, text }])
+  }
+
+  function appendWorkbookResult(result: QueryResult) {
+    setEntries((current) => [...current, { id: newId(), role: "result", result }])
   }
 
   async function begin(workbook: Workbook) {
@@ -295,22 +275,37 @@ export default function App() {
     )
     streamRef.current = stream
     stream.onmessage = (event) => {
-      const payload = JSON.parse(event.data) as {
-        type: string
-        data: Record<string, unknown>
+      let payload: unknown
+      try {
+        payload = JSON.parse(event.data)
+      } catch {
+        return
       }
+      if (
+        !isRecord(payload) ||
+        typeof payload.type !== "string" ||
+        !isRecord(payload.data)
+      )
+        return
+
       if (
         payload.type === "assistant_message" &&
         typeof payload.data.message === "string"
       )
         append("assistant", payload.data.message)
+      if (payload.type === "workbook_result") {
+        const result = parseQueryResult(payload.data.result)
+        if (result) appendWorkbookResult(result)
+      }
       if (payload.type === "activity") {
         const activity = payload.data as unknown as Activity
         if (typeof activity.summary === "string" && typeof activity.elapsed_ms === "number")
           setActivities((current) => [...current, activity])
       }
-      if (payload.type === "confirmation_required")
-        setStage(payload.data as unknown as Stage)
+      if (payload.type === "confirmation_required") {
+        const nextStage = parseStage(payload.data)
+        if (nextStage) setStage(nextStage)
+      }
       if (
         payload.type === "artifact_ready" &&
         typeof payload.data.artifact_id === "string"
@@ -526,7 +521,9 @@ export default function App() {
                 ) : null}
                 {entries.map((entry) => (
                   <MessageScrollerItem key={entry.id} scrollAnchor>
-                    {entry.role === "user" ? (
+                    {entry.role === "result" ? (
+                      <WorkbookResult result={entry.result} />
+                    ) : entry.role === "user" ? (
                       <Message align="end">
                         <MessageContent>
                           <Bubble align="end">
@@ -566,7 +563,7 @@ export default function App() {
                 ) : null}
                 {stage ? (
                   <MessageScrollerItem scrollAnchor>
-                    <ChangePreview stage={stage} />
+                    <MutationPreview stage={stage} />
                     <Button
                       className="mx-3"
                       onClick={() => setConfirmationOpen(true)}
@@ -685,6 +682,7 @@ export default function App() {
               verify and provide a new workbook artifact.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {stage ? <MutationPreview compact stage={stage} /> : null}
           <AlertDialogFooter>
             <AlertDialogCancel>Keep reviewing</AlertDialogCancel>
             <AlertDialogAction onClick={confirm}>
