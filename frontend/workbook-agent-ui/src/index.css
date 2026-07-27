@@ -1,8 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-@custom-variant dark (&:is(.dark *));
-
 @theme inline {
   --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
   --font-mono: ui-monospace, "Cascadia Code", "Segoe UI Mono", monospace;
@@ -31,46 +29,26 @@
 }
 
 :root {
-  --background: #f7f9f7;
-  --foreground: #18211d;
+  color-scheme: light;
+  --background: #f8fafc;
+  --foreground: #0f172a;
   --card: #ffffff;
-  --card-foreground: #18211d;
+  --card-foreground: #0f172a;
   --popover: #ffffff;
-  --popover-foreground: #18211d;
-  --primary: #176b5b;
+  --popover-foreground: #0f172a;
+  --primary: #075e54;
   --primary-foreground: #ffffff;
-  --secondary: #edf3ef;
-  --secondary-foreground: #233b32;
-  --muted: #eef3ef;
-  --muted-foreground: #5d6a64;
-  --accent: #e9f0f8;
-  --accent-foreground: #244765;
-  --destructive: #b83b32;
-  --border: #dce4df;
-  --input: #dce4df;
-  --ring: #176b5b;
+  --secondary: #e2f0eb;
+  --secondary-foreground: #123d34;
+  --muted: #e8eef2;
+  --muted-foreground: #334155;
+  --accent: #dbeafe;
+  --accent-foreground: #123d66;
+  --destructive: #9f2d23;
+  --border: #b8c8c1;
+  --input: #94a3b8;
+  --ring: #075e54;
   --radius: 0.7rem;
-}
-
-.dark {
-  --background: #111a16;
-  --foreground: #eef4ef;
-  --card: #18251f;
-  --card-foreground: #eef4ef;
-  --popover: #18251f;
-  --popover-foreground: #eef4ef;
-  --primary: #66b5a4;
-  --primary-foreground: #0c1813;
-  --secondary: #26362e;
-  --secondary-foreground: #e0ece3;
-  --muted: #243129;
-  --muted-foreground: #a9bbb0;
-  --accent: #253c50;
-  --accent-foreground: #d9ebfb;
-  --destructive: #ee8d83;
-  --border: #34463b;
-  --input: #34463b;
-  --ring: #66b5a4;
 }
 
 @layer base {
@@ -88,6 +66,7 @@
     @apply bg-background text-foreground;
     font-family: var(--font-sans);
     overflow: hidden;
+    text-rendering: optimizeLegibility;
   }
 
   button,

@@ -12,21 +12,27 @@ import {
 describe("workbook chat sessions", () => {
   it("creates an empty store when storage is empty", () => {
     const storage = new Map<string, string>()
-    const store = loadSessionStore({ getItem: (key: string) => storage.get(key) ?? null } as unknown as Storage)
+    const store = loadSessionStore({
+      getItem: (key: string) => storage.get(key) ?? null,
+    } as unknown as Storage)
 
     expect(store.sessions).toEqual([])
     expect(store.activeSessionId).toBeNull()
   })
 
   it("recovers safely from an invalid saved value", () => {
-    const store = loadSessionStore({ getItem: () => "not json" } as unknown as Storage)
+    const store = loadSessionStore({
+      getItem: () => "not json",
+    } as unknown as Storage)
 
     expect(store.sessions).toEqual([])
     expect(store.activeSessionId).toBeNull()
   })
 
   it("does not persist an empty draft store", () => {
-    const values = new Map<string, string>([[SESSION_STORAGE_KEY, "legacy draft"]])
+    const values = new Map<string, string>([
+      [SESSION_STORAGE_KEY, "legacy draft"],
+    ])
     const storage = {
       getItem: (key: string) => values.get(key) ?? null,
       removeItem: (key: string) => values.delete(key),
@@ -47,7 +53,11 @@ describe("workbook chat sessions", () => {
     } as unknown as Storage
     const store = createInitialSessionStore()
     const session = createSession("real-estate")
-    session.entries.push({ id: "entry-1", kind: "user", text: "Show me a listing status overview." })
+    session.entries.push({
+      id: "entry-1",
+      kind: "user",
+      text: "Show me a listing status overview.",
+    })
     store.activeSessionId = session.id
     store.sessions.push(session)
 

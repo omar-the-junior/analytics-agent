@@ -2,6 +2,7 @@ import hashlib
 import shutil
 from pathlib import Path
 
+import pandas as pd
 from app.agent_loop import AgentLoop, ModelMessage, ToolCall
 from app.workbook_session import SOURCES, WorkbookSession, WorkbookToolExecutor
 from openpyxl import load_workbook
@@ -74,6 +75,22 @@ def test_ambiguous_city_and_unknown_field_fail_safely(tmp_path: Path) -> None:
     assert ambiguous.status == "needs_clarification"
     assert ambiguous.payload["error_code"] == "ambiguous_city_scope"
     assert unknown.status == "rejected"
+
+
+def test_maximum_value_selection_returns_the_stable_id_from_the_same_row(tmp_path: Path) -> None:
+    """A value and its Stable ID must be selected by the tool, never re-paired by the model."""
+    session = WorkbookSession("listings", tmp_path)
+    source = pd.read_excel(SOURCES["listings"])
+    expected = source.loc[source["List Price"].idxmax()].to_dict()
+
+    result = session.query_workbook({"aggregate": "max", "column": "List Price"})
+
+    assert result.status == "ok"
+    assert result.payload["column"] == "List Price"
+    assert result.payload["value"] == expected["List Price"]
+    assert result.payload["stable_id"] == expected["Listing ID"]
+    assert result.payload["row"]["Listing ID"] == expected["Listing ID"]
+    assert result.payload["row"]["List Price"] == expected["List Price"]
 
 
 def test_stage_requires_exact_commit_and_verifies_artifact(tmp_path: Path) -> None:

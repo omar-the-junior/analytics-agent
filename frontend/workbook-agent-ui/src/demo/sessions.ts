@@ -1,4 +1,9 @@
-import { DEMO_SCENARIOS, type DemoScenarioId, type WorkbookId, WORKBOOKS } from "@/demo/workbooks"
+import {
+  DEMO_SCENARIOS,
+  type DemoScenarioId,
+  type WorkbookId,
+  WORKBOOKS,
+} from "@/demo/workbooks"
 
 export const SESSION_STORAGE_KEY = "workbook-assistant/sessions/v1"
 const SESSION_STORAGE_VERSION = 1
@@ -26,10 +31,16 @@ export type SessionStore = {
 }
 
 function createId() {
-  return globalThis.crypto?.randomUUID?.() ?? `session-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  return (
+    globalThis.crypto?.randomUUID?.() ??
+    `session-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  )
 }
 
-export function createSession(workbookId: WorkbookId, now = new Date()): WorkbookSession {
+export function createSession(
+  workbookId: WorkbookId,
+  now = new Date()
+): WorkbookSession {
   const timestamp = now.toISOString()
 
   return {
@@ -67,7 +78,9 @@ function isChatEntry(value: unknown): value is ChatEntry {
   }
 
   return (
-    (entry.kind === "user" || entry.kind === "agent" || entry.kind === "unsupported") &&
+    (entry.kind === "user" ||
+      entry.kind === "agent" ||
+      entry.kind === "unsupported") &&
     typeof entry.text === "string"
   )
 }
@@ -117,9 +130,17 @@ export function createExampleSessions(now = new Date()): WorkbookSession[] {
 
   return [
     buildSession("real-estate", "Listing status follow-up", [
-      { id: createId(), kind: "user", text: "Show me a listing status overview." },
+      {
+        id: createId(),
+        kind: "user",
+        text: "Show me a listing status overview.",
+      },
       { id: createId(), kind: "answer", scenarioId: "listing-status-overview" },
-      { id: createId(), kind: "user", text: "Why should I focus on Sold listings for price analysis?" },
+      {
+        id: createId(),
+        kind: "user",
+        text: "Why should I focus on Sold listings for price analysis?",
+      },
       {
         id: createId(),
         kind: "agent",
@@ -127,7 +148,11 @@ export function createExampleSessions(now = new Date()): WorkbookSession[] {
       },
     ]),
     buildSession("marketing", "Channel performance review", [
-      { id: createId(), kind: "user", text: "Which channel has the highest aggregate ROAS?" },
+      {
+        id: createId(),
+        kind: "user",
+        text: "Which channel has the highest aggregate ROAS?",
+      },
       { id: createId(), kind: "answer", scenarioId: "channel-roas" },
       { id: createId(), kind: "user", text: "What should I investigate next?" },
       {
@@ -140,8 +165,16 @@ export function createExampleSessions(now = new Date()): WorkbookSession[] {
       "marketing",
       "Campaign budget confirmation",
       [
-        { id: createId(), kind: "user", text: "Change CMP-8002's Budget Allocated to $30,000." },
-        { id: createId(), kind: "answer", scenarioId: "campaign-budget-update" },
+        {
+          id: createId(),
+          kind: "user",
+          text: "Change CMP-8002's Budget Allocated to $30,000.",
+        },
+        {
+          id: createId(),
+          kind: "answer",
+          scenarioId: "campaign-budget-update",
+        },
         { id: createId(), kind: "user", text: "Confirm the demo change." },
         {
           id: createId(),
@@ -154,7 +187,9 @@ export function createExampleSessions(now = new Date()): WorkbookSession[] {
   ]
 }
 
-export function loadSessionStore(storage: Storage | null = window.localStorage): SessionStore {
+export function loadSessionStore(
+  storage: Storage | null = window.localStorage
+): SessionStore {
   try {
     const rawValue = storage?.getItem(SESSION_STORAGE_KEY)
 
@@ -164,9 +199,14 @@ export function loadSessionStore(storage: Storage | null = window.localStorage):
 
     const parsedValue = JSON.parse(rawValue) as Partial<SessionStore>
     const sessions = Array.isArray(parsedValue.sessions)
-      ? parsedValue.sessions.filter((session): session is WorkbookSession => isSession(session) && session.entries.length > 0)
+      ? parsedValue.sessions.filter(
+          (session): session is WorkbookSession =>
+            isSession(session) && session.entries.length > 0
+        )
       : []
-    const activeSession = sessions.find((session) => session.id === parsedValue.activeSessionId)
+    const activeSession = sessions.find(
+      (session) => session.id === parsedValue.activeSessionId
+    )
 
     if (parsedValue.version !== SESSION_STORAGE_VERSION) {
       return createInitialSessionStore()
@@ -182,7 +222,10 @@ export function loadSessionStore(storage: Storage | null = window.localStorage):
   }
 }
 
-export function persistSessionStore(store: SessionStore, storage: Storage | null = window.localStorage) {
+export function persistSessionStore(
+  store: SessionStore,
+  storage: Storage | null = window.localStorage
+) {
   try {
     if (store.sessions.length === 0) {
       storage?.removeItem(SESSION_STORAGE_KEY)
@@ -198,5 +241,7 @@ export function persistSessionStore(store: SessionStore, storage: Storage | null
 export function sessionTitleForPrompt(prompt: string) {
   const trimmedPrompt = prompt.trim()
 
-  return trimmedPrompt.length > 42 ? `${trimmedPrompt.slice(0, 42).trimEnd()}…` : trimmedPrompt
+  return trimmedPrompt.length > 42
+    ? `${trimmedPrompt.slice(0, 42).trimEnd()}…`
+    : trimmedPrompt
 }

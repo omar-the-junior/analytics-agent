@@ -32,7 +32,7 @@ class QueryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     filters: dict[str, FilterValue] = Field(default_factory=dict)
-    aggregate: Literal["rows", "count", "sum"] = "rows"
+    aggregate: Literal["rows", "count", "sum", "min", "max"] = "rows"
     column: str | None = None
     limit: StrictInt = Field(default=10, ge=1, le=MAX_ROWS)
 
@@ -95,6 +95,26 @@ class WorkbookSession:
     def active_path(self) -> Path:
         return self._active
 
+    @property
+    def pending_stage(self) -> dict[str, Any] | None:
+        stage = self._staged
+        if stage is None:
+            return None
+        return {
+            "stage_id": stage.stage_id,
+            "operation": stage.operation,
+            "stable_id": stage.target_id,
+            "before": stage.before
+            if stage.operation != "update"
+            else {key: stage.before[key] for key in stage.values},
+            "after": stage.after
+            if stage.operation != "update"
+            else {key: stage.after[key] for key in stage.values},
+        }
+
+    def discard_stage(self) -> None:
+        self._staged = None
+
     def _frame(self) -> pd.DataFrame:
         return pd.read_excel(self._active)
 
@@ -156,6 +176,33 @@ class WorkbookSession:
                 payload={
                     "column": column,
                     "value": _value(frame[column].sum()),
+                    "calculation_source": "tool_computed",
+                },
+            )
+        if aggregate in {"min", "max"}:
+            column = query.column
+            if column not in frame.columns or not pd.api.types.is_numeric_dtype(frame[column]):
+                return ToolResult(
+                    status="rejected", payload={"error_code": "invalid_aggregate_column"}
+                )
+            candidates = frame.dropna(subset=[column])
+            if candidates.empty:
+                return ToolResult(status="ok", payload={"unavailable": True, "column": column})
+            identifier = ID_COLUMNS[self.workbook]
+            selected = candidates.sort_values(
+                [column, identifier],
+                ascending=[aggregate == "min", True],
+                kind="stable",
+            ).iloc[0]
+            row = {key: _value(value) for key, value in selected.to_dict().items()}
+            return ToolResult(
+                status="ok",
+                payload={
+                    "column": column,
+                    "value": row[column],
+                    "row": row,
+                    "stable_id_field": identifier,
+                    "stable_id": row[identifier],
                     "calculation_source": "tool_computed",
                 },
             )

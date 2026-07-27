@@ -36,7 +36,11 @@ Every SSE message has a monotonic event ID and a JSON payload:
 }
 ```
 
-The initial event types are `run_started`, `assistant_message`, `confirmation_required`, `artifact_ready`, `completed`, `cancelled`, and `failed`. They contain only user-safe content and opaque IDs: never provider errors, filesystem paths, API keys, raw workbook data beyond the requested response, or orchestration instructions.
+The event types are `run_started`, `activity`, `assistant_message`, `confirmation_required`, `artifact_ready`, `completed`, `cancelled`, and `failed`. They contain only user-safe content and opaque IDs: never provider errors, filesystem paths, API keys, raw workbook data beyond the requested response, or orchestration instructions.
+
+`activity` is an incremental, UI-safe trace. It may identify an approved tool by name, a generic safe-reasoning phase, status, and elapsed time in milliseconds. It must never include model chain-of-thought, prompts, tool arguments, tool results, or workbook rows. This lets the browser show a truthful activity timeline such as “Reviewing the request” and “Querying workbook data” without exposing private or untrusted content.
+
+`run_started`, `assistant_message`, and terminal events include timing metadata. The API currently streams lifecycle and activity events; final assistant prose is emitted as one `assistant_message`, rather than provider token deltas.
 
 ## Errors
 

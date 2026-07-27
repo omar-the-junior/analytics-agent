@@ -1,9 +1,7 @@
 export type WorkbookId = "real-estate" | "marketing"
 
 export type DemoScenarioId =
-  | "listing-status-overview"
-  | "channel-roas"
-  | "campaign-budget-update"
+  "listing-status-overview" | "channel-roas" | "campaign-budget-update"
 
 export type EvidenceRow = {
   label: string
@@ -54,7 +52,8 @@ export const WORKBOOKS: Record<WorkbookId, Workbook> = {
     id: "real-estate",
     name: "Real Estate Listings.xlsx",
     rowCount: 1000,
-    description: "US property listings across Active, Pending, and Sold statuses.",
+    description:
+      "US property listings across Active, Pending, and Sold statuses.",
     columns: [
       "Listing ID",
       "Property Type",
@@ -74,7 +73,8 @@ export const WORKBOOKS: Record<WorkbookId, Workbook> = {
     id: "marketing",
     name: "Marketing Campaigns.xlsx",
     rowCount: 1000,
-    description: "Campaign performance across paid social, search, and email channels.",
+    description:
+      "Campaign performance across paid social, search, and email channels.",
     columns: [
       "Campaign ID",
       "Campaign Name",
@@ -123,7 +123,8 @@ export const DEMO_SCENARIOS: Record<DemoScenarioId, DemoScenario> = {
         { label: "Total amount spent", value: "$1,618,335.15" },
         { label: "Aggregate ROAS", value: "12.99×" },
       ],
-      calculation: "Aggregate ROAS = total revenue ÷ total amount spent, grouped by Channel.",
+      calculation:
+        "Aggregate ROAS = total revenue ÷ total amount spent, grouped by Channel.",
       nextActions: ["Compare every channel", "Inspect Email campaigns"],
     },
   },
@@ -139,8 +140,10 @@ export const DEMO_SCENARIOS: Record<DemoScenarioId, DemoScenario> = {
         { label: "Current budget", value: "$24,500" },
         { label: "Proposed budget", value: "$30,000" },
       ],
-      calculation: "Matched Campaign ID exactly, then staged a single field-level change.",
-      caveat: "This is a frontend demo preview. No workbook data has been changed.",
+      calculation:
+        "Matched Campaign ID exactly, then staged a single field-level change.",
+      caveat:
+        "This is a frontend demo preview. No workbook data has been changed.",
       nextActions: ["Confirm demo change", "Keep reviewing"],
     },
     mutationPreview: {

@@ -107,3 +107,19 @@ _Avoid_: Source workbook, shared working file, or a mutation-only copy
 **WorkbookSession**:
 The bounded chat-scoped service that validates requests and operates on that chat's Session Workbook. It uses pandas for approved calculations and openpyxl for verified committed versions; neither library determines what is permitted.
 _Avoid_: Arbitrary workbook executor, model-controlled file access, or a query-only session
+
+**Workbook Key**:
+The backend-owned identifier for one supplied source workbook: `listings` or `campaigns`. It binds a newly created WorkbookSession; uploads are not part of this API.
+_Avoid_: Filename, client-selected path, uploaded workbook
+
+**Confirmed Mutation**:
+A Staged Mutation whose unchanged `stage_id` was explicitly authorized and then committed directly into a verified output artifact without another model invocation.
+_Avoid_: Chat-text authorization, post-confirmation agent action
+
+**Cancelled Run**:
+A terminal backend run whose cancellation revokes any staged change and which cannot produce an artifact or later accept confirmation.
+_Avoid_: Paused run, reversible cancellation
+
+**Backend Session**:
+The in-memory API record that owns one WorkbookSession and its bounded runs. It expires when the API process restarts, so the browser must not present local demo history as server state.
+_Avoid_: Persisted browser chat, demo session

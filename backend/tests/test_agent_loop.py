@@ -1,11 +1,17 @@
+import json
+
+import httpx
 from app.agent_loop import (
     MAX_MODEL_ACTION_BYTES,
     MAX_TOOL_RESULT_BYTES,
+    MODEL_TOOL_DEFINITIONS,
     AgentLoop,
+    ModelCompletion,
     ModelMessage,
-    TraceEvent,
+    NvidiaModelClient,
     ToolCall,
     ToolResult,
+    TraceEvent,
 )
 
 
@@ -27,6 +33,86 @@ class FakeToolExecutor:
     def execute(self, tool_call: ToolCall) -> ToolResult:
         self.calls.append(tool_call.name)
         return self.results[tool_call.name]
+
+
+def test_nvidia_client_declares_native_function_tools_and_returns_tool_call_metadata() -> None:
+    recorded: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        recorded.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_nvidia_123",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "describe_workbook",
+                                        "arguments": "{}",
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+
+    client = NvidiaModelClient(
+        api_key="test-key",
+        model="nvidia/nemotron-3-nano-30b-a3b",
+        transport=httpx.MockTransport(handler),
+    )
+    completion = client.complete([ModelMessage(role="user", content="Describe this workbook.")])
+
+    assert isinstance(completion, ModelCompletion)
+    assert completion.tool_call_ids == ("call_nvidia_123",)
+    assert recorded["tools"] == MODEL_TOOL_DEFINITIONS
+    assert recorded["tool_choice"] == "auto"
+    assert "thinking" not in recorded
+
+
+def test_agent_preserves_native_tool_call_id_in_tool_result_message() -> None:
+    class NativeToolModel:
+        def complete(self, messages: list[ModelMessage]) -> str | ModelCompletion:
+            if len(messages) == 2:
+                return ModelCompletion(
+                    action=(
+                        '{"kind":"tool_batch","tool_calls":['
+                        '{"name":"query_workbook","arguments":{"aggregate":"count"}}]}'
+                    ),
+                    assistant_message=ModelMessage(
+                        role="assistant",
+                        content="",
+                        tool_calls=[
+                            {
+                                "id": "call_456",
+                                "type": "function",
+                                "function": {
+                                    "name": "query_workbook",
+                                    "arguments": '{"aggregate":"count"}',
+                                },
+                            }
+                        ],
+                    ),
+                    tool_call_ids=("call_456",),
+                )
+            assert messages[-1].role == "tool"
+            assert messages[-1].tool_call_id == "call_456"
+            return '{"kind":"final","answer":"There are 1000 rows."}'
+
+    run = AgentLoop(
+        NativeToolModel(),
+        FakeToolExecutor({"query_workbook": ToolResult(status="ok", payload={"count": 1000})}),
+    ).run("Count rows", "Use workbook tools.")
+
+    assert run.status == "completed"
 
 
 def test_agent_executes_a_tool_batch_in_order_then_returns_a_final_answer() -> None:
@@ -165,4 +251,7 @@ def test_agent_converts_a_provider_failure_to_a_safe_terminal_trace() -> None:
     run = AgentLoop(FailingModelClient(), FakeToolExecutor({})).run("Hello", "Use workbook tools.")
 
     assert run.status == "stopped"
-    assert run.trace == [TraceEvent("provider_error", {"iteration": 1})]
+    assert run.trace == [
+        TraceEvent("model_request", {"iteration": 1}),
+        TraceEvent("provider_error", {"iteration": 1}),
+    ]
