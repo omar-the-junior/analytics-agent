@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.agent_loop import ToolCall
+from app.agent_loop import ToolCall, ToolResult
 from app.workbook_session import ID_COLUMNS, SOURCES, WorkbookSession, WorkbookToolExecutor
 
 CORPUS_VERSION = "1.0.0"
@@ -144,11 +144,39 @@ def _case(
 
 
 def _record(session: TracedSession) -> dict[str, object]:
-    return session.query_workbook({"limit": 1}).payload["rows"][0]
+    result = session.query_workbook({"limit": 1})
+    payload = result.payload
+    return dict(zip(payload["columns"], payload["rows"][0], strict=True))
 
 
-def _response(result: object) -> dict[str, object]:
-    return {"status": result.status, **result.payload}  # type: ignore[attr-defined]
+def _response(result: ToolResult) -> dict[str, object]:
+    payload = result.payload
+    if payload.get("kind") == "table":
+        return {
+            "status": result.status,
+            "count": payload["row_count"],
+            "calculation_source": payload["calculation_source"],
+        }
+    if payload.get("kind") == "metric":
+        if payload["unavailable"]:
+            return {
+                "status": "unavailable",
+                "metric": payload["metric"],
+                "column": payload["column"],
+                "calculation_source": payload["calculation_source"],
+            }
+        response = {
+            "status": result.status,
+            "metric": payload["metric"],
+            "value": payload["value"],
+            "calculation_source": payload["calculation_source"],
+        }
+        if payload["metric"] == "count":
+            response["count"] = payload["value"]
+        if payload["column"] is not None:
+            response["column"] = payload["column"]
+        return response
+    return {"status": result.status, **payload}
 
 
 def _mutation_case(workbook: str, operation: str, number: int) -> Callable[[], Observation]:
@@ -179,10 +207,9 @@ def _mutation_case(workbook: str, operation: str, number: int) -> Callable[[], O
                 False,
             )
         result = session.query_workbook({"filters": {identifier: target}})
-        if operation == "delete":
-            artifact_ok = result.status == "ok" and result.payload["count"] == 0
-        else:
-            artifact_ok = result.status == "ok" and result.payload["count"] == 1
+        artifact_ok = result.status == "ok" and result.payload["row_count"] == (
+            0 if operation == "delete" else 1
+        )
         return Observation(
             _response(committed),
             tuple(session.tools),
@@ -279,6 +306,11 @@ def _campaign_derived_metric_case(
         if numerator_result.status != "ok" or denominator_result.status != "ok":
             return Observation(
                 {"status": "rejected"}, tuple(session.tools), semantic_postconditions=False
+            )
+        if numerator_result.payload["unavailable"] or denominator_result.payload["unavailable"]:
+            return Observation(
+                {"status": "unavailable", "metric": metric, "calculation_source": "tool_computed"},
+                tuple(session.tools),
             )
         denominator_value = denominator_result.payload["value"]
         if denominator_value == 0:

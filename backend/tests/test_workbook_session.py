@@ -8,6 +8,14 @@ from app.workbook_session import SOURCES, WorkbookSession, WorkbookToolExecutor
 from openpyxl import load_workbook
 
 
+def _row(result) -> dict[str, object]:
+    return dict(zip(result.payload["columns"], result.payload["rows"][0], strict=True))
+
+
+def _count(result) -> int:
+    return result.payload["value"]
+
+
 def test_describe_and_query_preserve_the_supplied_source(tmp_path: Path) -> None:
     source_hash = SOURCES["listings"].read_bytes()
     session = WorkbookSession("listings", tmp_path)
@@ -17,7 +25,7 @@ def test_describe_and_query_preserve_the_supplied_source(tmp_path: Path) -> None
 
     assert description.status == "ok"
     assert description.payload["stable_id"] == "Listing ID"
-    assert result.payload["count"] > 0
+    assert _count(result) > 0
     assert SOURCES["listings"].read_bytes() == source_hash
 
 
@@ -96,7 +104,7 @@ def test_maximum_value_selection_returns_the_stable_id_from_the_same_row(tmp_pat
 def test_stage_requires_exact_commit_and_verifies_artifact(tmp_path: Path) -> None:
     source_bytes = SOURCES["listings"].read_bytes()
     session = WorkbookSession("listings", tmp_path)
-    original = session.query_workbook({"filters": {"Listing ID": "LST-5001"}}).payload["rows"][0]
+    original = _row(session.query_workbook({"filters": {"Listing ID": "LST-5001"}}))
     before_stage = session.active_path.read_bytes()
     version_before_stage = session.describe_workbook().payload["version"]
 
@@ -104,14 +112,17 @@ def test_stage_requires_exact_commit_and_verifies_artifact(tmp_path: Path) -> No
         {"operation": "update", "target_id": "LST-5001", "values": {"List Price": 351001}}
     )
     assert staged.payload["status"] == "confirmation_required"
-    assert staged.payload["before"] == {"List Price": 351000}
-    assert staged.payload["after"] == {"List Price": 351001}
+    assert staged.payload["preview"] == {
+        "kind": "field_diff",
+        "columns": ["Field", "Before", "After"],
+        "rows": [["List Price", 351000, 351001]],
+    }
     assert session.active_path.read_bytes() == before_stage
     assert session.describe_workbook().payload["version"] == version_before_stage
 
     denied = session.commit_mutation({"stage_id": "not-the-stage"})
     committed = session.commit_mutation({"stage_id": staged.payload["stage_id"]})
-    changed = session.query_workbook({"filters": {"Listing ID": "LST-5001"}}).payload["rows"][0]
+    changed = _row(session.query_workbook({"filters": {"Listing ID": "LST-5001"}}))
     assert denied.payload["error_code"] == "confirmation_required"
     assert committed.payload["verified"] is True
     assert original["List Price"] == 351000
@@ -124,7 +135,7 @@ def test_commit_reports_verified_artifact_postconditions_and_preserves_formulas(
 ) -> None:
     session = WorkbookSession("listings", tmp_path)
     before_version = session.describe_workbook().payload["version"]
-    before_rows = session.query_workbook({"aggregate": "count"}).payload["count"]
+    before_rows = _count(session.query_workbook({"aggregate": "count"}))
     workbook = load_workbook(session.active_path)
     sheet = workbook.active
     headers = {cell.value: cell.column for cell in sheet[1]}
@@ -186,9 +197,7 @@ def test_stage_rejects_malformed_or_unsupported_mutations(tmp_path: Path) -> Non
         {"operation": "update", "target_id": "CMP-8001", "values": {"Campaign ID": "CMP-9000"}}
     )
     listings = WorkbookSession("listings", tmp_path / "listings")
-    active_listing = listings.query_workbook({"filters": {"Listing Status": "Active"}}).payload[
-        "rows"
-    ][0]
+    active_listing = _row(listings.query_workbook({"filters": {"Listing Status": "Active"}}))
     sold_without_sale_price = listings.stage_mutation(
         {
             "operation": "update",
@@ -210,20 +219,18 @@ def test_insert_and_delete_are_reviewed_before_they_change_a_session_workbook(
 ) -> None:
     source_bytes = SOURCES["campaigns"].read_bytes()
     insert_session = WorkbookSession("campaigns", tmp_path / "insert")
-    template = insert_session.query_workbook(
-        {"filters": {"Campaign ID": "CMP-8001"}}
-    ).payload["rows"][0]
+    template = _row(insert_session.query_workbook({"filters": {"Campaign ID": "CMP-8001"}}))
     inserted_row = {**template, "Campaign ID": "CMP-9999", "Campaign Name": "New campaign"}
     before_insert = insert_session.active_path.read_bytes()
-    insert_row_count = insert_session.query_workbook({"aggregate": "count"}).payload["count"]
+    insert_row_count = _count(insert_session.query_workbook({"aggregate": "count"}))
 
     inserted = insert_session.stage_mutation(
         {"operation": "insert", "target_id": "CMP-9999", "values": inserted_row}
     )
 
     assert inserted.payload["status"] == "confirmation_required"
-    assert inserted.payload["before"] is None
-    assert inserted.payload["after"]["Campaign ID"] == "CMP-9999"
+    assert inserted.payload["preview"]["kind"] == "after_row"
+    assert inserted.payload["preview"]["rows"][0][0] == "CMP-9999"
     assert insert_session.active_path.read_bytes() == before_insert
     assert SOURCES["campaigns"].read_bytes() == source_bytes
 
@@ -238,20 +245,20 @@ def test_insert_and_delete_are_reviewed_before_they_change_a_session_workbook(
     insert_artifact = load_workbook(tmp_path / "insert" / committed_insert.payload["artifact"])
     assert any(cell.value == "CMP-9999" for cell in insert_artifact.active["A"])
     assert insert_session.query_workbook({"filters": {"Campaign ID": "CMP-9999"}}).payload[
-        "count"
+        "row_count"
     ] == 1
     assert SOURCES["campaigns"].read_bytes() == source_bytes
 
     delete_session = WorkbookSession("campaigns", tmp_path / "delete")
-    delete_row_count = delete_session.query_workbook({"aggregate": "count"}).payload["count"]
+    delete_row_count = _count(delete_session.query_workbook({"aggregate": "count"}))
     deleted = delete_session.stage_mutation(
         {"operation": "delete", "target_id": "CMP-8001", "values": {}}
     )
 
-    assert deleted.payload["before"]["Campaign ID"] == "CMP-8001"
-    assert deleted.payload["after"] is None
+    assert deleted.payload["preview"]["kind"] == "before_row"
+    assert deleted.payload["preview"]["rows"][0][0] == "CMP-8001"
     assert delete_session.query_workbook({"filters": {"Campaign ID": "CMP-8001"}}).payload[
-        "count"
+        "row_count"
     ] == 1
 
     committed_delete = delete_session.commit_mutation({"stage_id": deleted.payload["stage_id"]})
@@ -265,7 +272,7 @@ def test_insert_and_delete_are_reviewed_before_they_change_a_session_workbook(
     delete_artifact = load_workbook(tmp_path / "delete" / committed_delete.payload["artifact"])
     assert all(cell.value != "CMP-8001" for cell in delete_artifact.active["A"])
     assert delete_session.query_workbook({"filters": {"Campaign ID": "CMP-8001"}}).payload[
-        "count"
+        "row_count"
     ] == 0
     assert SOURCES["campaigns"].read_bytes() == source_bytes
 

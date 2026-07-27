@@ -13,17 +13,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.agent_loop import AgentLoop, ModelClient, TraceEvent
-from app.schemas import SafeError, StreamEvent
+from app.schemas import SafeError, StreamEvent, WorkbookResultEventData
 from app.settings import Settings
 from app.workbook_session import WorkbookSession, WorkbookToolExecutor
 
 EVENT_WINDOW = 100
 logger = logging.getLogger("workbook_agent.api")
 SYSTEM_PROMPT = (
-    "Answer workbook questions using the permitted tools. For a requested workbook change, "
-    "stage exactly one mutation and explain the proposed change. Never claim a change was made "
-    "until it has been confirmed. Format user-facing answers in concise Markdown when structure "
-    "would improve readability."
+    "Use query_workbook whenever workbook data is needed. Use min or max for highest/lowest "
+    "values, and order_by with limit for ranked lists. Quote values, Stable IDs, and rows exactly "
+    "as returned; never calculate, sort, match, or re-pair them in prose. Request presentation "
+    "table for a user-facing workbook result, explain its scope concisely, and never make a "
+    "Markdown table from workbook data. For a requested workbook change, stage exactly one "
+    "mutation and explain the proposed change; never commit a Staged Mutation. Never claim a "
+    "change was made until confirmed."
 )
 
 
@@ -42,6 +45,8 @@ class RunState:
     condition: threading.Condition = field(default_factory=threading.Condition)
 
     def emit(self, event_type: str, data: dict[str, object] | None = None) -> None:
+        if event_type == "workbook_result":
+            data = WorkbookResultEventData.model_validate(data or {}).model_dump()
         with self.condition:
             self.events.append(
                 StreamEvent(
@@ -116,7 +121,12 @@ class ApiRuntime:
 
             agent = AgentLoop(
                 self._model_factory(),
-                WorkbookToolExecutor(session.workbook_session),
+                WorkbookToolExecutor(
+                    session.workbook_session,
+                    query_result_callback=lambda result: run.emit(
+                        "workbook_result", WorkbookResultEventData(result=result).model_dump()
+                    ),
+                ),
                 max_iterations=self._settings.agent_max_iterations,
                 run_timeout_seconds=self._settings.agent_run_timeout_seconds,
                 trace_callback=emit_trace,

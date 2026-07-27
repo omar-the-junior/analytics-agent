@@ -2,6 +2,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app.workbook_session import QueryResult
+
 
 class HealthResponse(BaseModel):
     status: str = "ok"
@@ -65,12 +67,19 @@ class SafeError(BaseModel):
     correlation_id: str
 
 
+class WorkbookResultEventData(BaseModel):
+    """The only SSE data shape permitted to contain Session Workbook values."""
+
+    result: QueryResult
+
+
 class StreamEvent(BaseModel):
     event_id: int
     run_id: str
     type: Literal[
         "run_started",
         "activity",
+        "workbook_result",
         "assistant_message",
         "confirmation_required",
         "artifact_ready",
