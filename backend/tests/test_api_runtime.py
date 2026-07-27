@@ -8,6 +8,18 @@ class FailingModelClient:
         raise RuntimeError("provider unavailable")
 
 
+def test_runtime_system_prompt_reserves_workbook_values_for_structured_results() -> None:
+    from app.api_runtime import SYSTEM_PROMPT
+
+    assert "publishes its validated result to the UI" in SYSTEM_PROMPT
+    assert "Lead with the direct answer, copied exactly from canonical fields" in SYSTEM_PROMPT
+    assert "a selection value, column, and atomically paired Stable ID" in SYSTEM_PROMPT
+    assert "do not copy arbitrary table cells" in SYSTEM_PROMPT
+    assert "houses or house means Property Type = House" in SYSTEM_PROMPT
+    assert "Write simple CommonMark prose only" in SYSTEM_PROMPT
+    assert "the UI displays its typed preview" in SYSTEM_PROMPT
+
+
 def test_provider_failure_is_logged_as_a_safe_provider_error(caplog) -> None:
     runtime = ApiRuntime(Settings(), model_factory=FailingModelClient)
     session = runtime.create_session("listings")
@@ -78,7 +90,7 @@ def test_runtime_reports_the_specific_exhausted_budget(monkeypatch) -> None:
     )
 
 
-def test_runtime_exposes_a_safe_activity_trace_without_tool_data(monkeypatch) -> None:
+def test_runtime_exposes_inspectable_tool_io_without_query_rows(monkeypatch) -> None:
     class TracingAgentLoop:
         def __init__(
             self, model, executor, *, max_iterations, run_timeout_seconds, trace_callback
@@ -90,13 +102,28 @@ def test_runtime_exposes_a_safe_activity_trace_without_tool_data(monkeypatch) ->
             self.trace_callback(
                 TraceEvent(
                     "tool_started",
-                    {"iteration": 1, "tool": "query_workbook", "filters": {"City": "Aurora"}},
+                    {
+                        "iteration": 1,
+                        "tool": "query_workbook",
+                        "input": {"filters": {"City": "Aurora"}},
+                    },
                 )
             )
             self.trace_callback(
                 TraceEvent(
                     "tool_result",
-                    {"iteration": 1, "tool": "query_workbook", "status": "ok", "payload": {"rows": []}},
+                    {
+                        "iteration": 1,
+                        "tool": "query_workbook",
+                        "status": "ok",
+                        "output": {
+                            "kind": "table",
+                            "columns": ["City"],
+                            "rows": [["Aurora"]],
+                            "row_count": 1,
+                            "truncated": False,
+                        },
+                    },
                 )
             )
             return AgentRun("completed", "Done.", [])
@@ -118,7 +145,15 @@ def test_runtime_exposes_a_safe_activity_trace_without_tool_data(monkeypatch) ->
         "status": "active",
         "tool": "query_workbook",
         "summary": "Querying workbook data.",
+        "input": {"filters": {"City": "Aurora"}},
     }
-    assert "filters" not in activities[1]
-    assert "payload" not in activities[2]
+    assert activities[2]["output"] == {
+        "status": "ok",
+        "kind": "table",
+        "columns": ["City"],
+        "returned_rows": 1,
+        "row_count": 1,
+        "truncated": False,
+    }
+    assert "rows" not in activities[2]["output"]
     assert isinstance(activities[2]["elapsed_ms"], int)

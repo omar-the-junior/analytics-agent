@@ -53,6 +53,26 @@ def test_filter_operators_and_extrema_return_a_canonical_query_result(tmp_path: 
     assert result.payload["calculation_source"] == "tool_computed"
 
 
+def test_texas_houses_count_requires_both_state_and_property_type(tmp_path: Path) -> None:
+    session = WorkbookSession("listings", tmp_path)
+
+    all_texas_listings = session.query_workbook(
+        {"filters": {"State": "Texas"}, "calculation": {"kind": "count"}}
+    )
+    texas_houses = session.query_workbook(
+        {
+            "filters": [
+                {"column": "State", "operator": "eq", "value": "Texas"},
+                {"column": "Property Type", "operator": "eq", "value": "House"},
+            ],
+            "calculation": {"kind": "count"},
+        }
+    )
+
+    assert all_texas_listings.payload["value"] == 90
+    assert texas_houses.payload["value"] == 29
+
+
 def test_filters_enforce_city_scope_and_exact_value_types(tmp_path: Path) -> None:
     session = WorkbookSession("listings", tmp_path)
 

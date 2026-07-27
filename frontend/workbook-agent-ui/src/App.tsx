@@ -2,9 +2,6 @@ import { useEffect, useRef, useState, type FormEvent } from "react"
 import ReactMarkdown from "react-markdown"
 import {
   Bot,
-  BrainCircuit,
-  CheckCircle2,
-  ChevronDown,
   Clock3,
   FileSpreadsheet,
   LoaderCircle,
@@ -12,7 +9,6 @@ import {
   ShieldCheck,
   Square,
   Upload,
-  Wrench,
 } from "lucide-react"
 
 import {
@@ -28,11 +24,6 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible"
 import {
   Empty,
   EmptyContent,
@@ -68,9 +59,15 @@ import {
   WorkbookResult,
 } from "@/components/workbook-data"
 import {
+  ExecutionTrace,
+  type ExecutionStatus,
+} from "@/components/execution-trace"
+import {
   isRecord,
+  parseActivity,
   parseQueryResult,
   parseStage,
+  type Activity,
   type QueryResult,
   type Stage,
 } from "@/lib/workbook-contract"
@@ -88,17 +85,15 @@ type TextEntry = {
   text: string
 }
 type ResultEntry = { id: string; role: "result"; result: QueryResult }
-type Entry = TextEntry | ResultEntry
-type ActiveSession = { id: string; workbook: Workbook }
-type Activity = {
-  activity: string
-  elapsed_ms: number
-  iteration?: number
-  kind: "reasoning" | "tool" | "response"
-  status: string
-  summary: string
-  tool?: string
+type TraceEntry = {
+  id: string
+  role: "trace"
+  activities: Activity[]
+  elapsedMs: number
+  status: ExecutionStatus
 }
+type Entry = TextEntry | ResultEntry | TraceEntry
+type ActiveSession = { id: string; workbook: Workbook }
 
 const WORKBOOKS: Workbook[] = [
   {
@@ -129,52 +124,6 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new Error(error?.message ?? "The request could not be completed.")
   }
   return response.json() as Promise<T>
-}
-
-function formatDuration(milliseconds: number) {
-  return `${(milliseconds / 1000).toFixed(milliseconds < 10_000 ? 1 : 0)}s`
-}
-
-function RunActivity({
-  activities,
-  elapsedMs,
-  isRunning,
-}: {
-  activities: Activity[]
-  elapsedMs: number
-  isRunning: boolean
-}) {
-  return (
-    <Collapsible className="mx-3 max-w-xl rounded-lg border bg-card" defaultOpen={isRunning}>
-      <CollapsibleTrigger asChild>
-        <Button className="w-full justify-between" size="sm" variant="ghost">
-          <span className="flex items-center gap-2">
-            {isRunning ? <LoaderCircle className="animate-spin" /> : <Clock3 />}
-            <span>{isRunning ? "Run activity" : "Run complete"}</span>
-            <Badge variant="secondary">{formatDuration(elapsedMs)}</Badge>
-          </span>
-          <ChevronDown data-icon="inline-end" />
-        </Button>
-      </CollapsibleTrigger>
-      <CollapsibleContent className="flex flex-col gap-2 px-3 pb-3">
-        <p className="text-xs text-muted-foreground">
-          Safe progress only—no hidden reasoning, prompts, or workbook rows are shown.
-        </p>
-        {activities.map((activity, index) => (
-          <div className="flex items-start gap-2 text-sm" key={`${activity.activity}-${index}`}>
-            {activity.kind === "tool" ? <Wrench /> : activity.status === "completed" ? <CheckCircle2 /> : <BrainCircuit />}
-            <div className="min-w-0 flex-1">
-              <p>{activity.summary}</p>
-              {activity.tool ? (
-                <p className="font-mono text-xs text-muted-foreground">{activity.tool}</p>
-              ) : null}
-            </div>
-            <span className="shrink-0 text-xs text-muted-foreground">{formatDuration(activity.elapsed_ms)}</span>
-          </div>
-        ))}
-      </CollapsibleContent>
-    </Collapsible>
-  )
 }
 
 export function AssistantMarkdown({ children }: { children: string }) {
@@ -219,13 +168,13 @@ export default function App() {
   const [confirmationOpen, setConfirmationOpen] = useState(false)
   const [artifactId, setArtifactId] = useState<string | null>(null)
   const [queuedMessages, setQueuedMessages] = useState<string[]>([])
-  const [activities, setActivities] = useState<Activity[]>([])
   const [startPending, setStartPending] = useState(false)
   const [elapsedMs, setElapsedMs] = useState(0)
   const streamRef = useRef<EventSource | null>(null)
   const queueRef = useRef<string[]>([])
   const runActiveRef = useRef(false)
   const runStartedAtRef = useRef<number | null>(null)
+  const activeTraceIdRef = useRef<string | null>(null)
 
   useEffect(() => () => streamRef.current?.close(), [])
 
@@ -246,6 +195,16 @@ export default function App() {
     setEntries((current) => [...current, { id: newId(), role: "result", result }])
   }
 
+  function updateActiveTrace(update: (trace: TraceEntry) => TraceEntry) {
+    const traceId = activeTraceIdRef.current
+    if (!traceId) return
+    setEntries((current) =>
+      current.map((entry) =>
+        entry.role === "trace" && entry.id === traceId ? update(entry) : entry
+      )
+    )
+  }
+
   async function begin(workbook: Workbook) {
     setError(null)
     try {
@@ -257,8 +216,8 @@ export default function App() {
       setEntries([])
       setArtifactId(null)
       setStage(null)
-      setActivities([])
       setElapsedMs(0)
+      activeTraceIdRef.current = null
       queueRef.current = []
       setQueuedMessages([])
     } catch (reason) {
@@ -298,13 +257,20 @@ export default function App() {
         if (result) appendWorkbookResult(result)
       }
       if (payload.type === "activity") {
-        const activity = payload.data as unknown as Activity
-        if (typeof activity.summary === "string" && typeof activity.elapsed_ms === "number")
-          setActivities((current) => [...current, activity])
+        const activity = parseActivity(payload.data)
+        if (activity)
+          updateActiveTrace((trace) => ({
+            ...trace,
+            activities: [...trace.activities, activity],
+            elapsedMs: activity.elapsed_ms,
+          }))
       }
       if (payload.type === "confirmation_required") {
         const nextStage = parseStage(payload.data)
-        if (nextStage) setStage(nextStage)
+        if (nextStage) {
+          setStage(nextStage)
+          updateActiveTrace((trace) => ({ ...trace, status: "awaiting_confirmation" }))
+        }
       }
       if (
         payload.type === "artifact_ready" &&
@@ -318,10 +284,23 @@ export default function App() {
             : "The run failed."
         )
       if (["completed", "cancelled", "failed"].includes(payload.type)) {
-        if (typeof payload.data.elapsed_ms === "number")
-          setElapsedMs(payload.data.elapsed_ms)
+        const completedElapsedMs =
+          typeof payload.data.elapsed_ms === "number" ? payload.data.elapsed_ms : elapsedMs
+        setElapsedMs(completedElapsedMs)
+        const traceStatus: ExecutionStatus =
+          payload.type === "completed"
+            ? "completed"
+            : payload.type === "cancelled"
+              ? "cancelled"
+              : "failed"
+        updateActiveTrace((trace) => ({
+          ...trace,
+          elapsedMs: completedElapsedMs,
+          status: traceStatus,
+        }))
         runActiveRef.current = false
         runStartedAtRef.current = null
+        activeTraceIdRef.current = null
         setStartPending(false)
         setRunId(null)
         stream.close()
@@ -338,18 +317,31 @@ export default function App() {
         runStartedAtRef.current = null
         setStartPending(false)
         setRunId(null)
+        updateActiveTrace((trace) => ({ ...trace, elapsedMs, status: "failed" }))
+        activeTraceIdRef.current = null
         setError("The live run connection was lost. Please try again.")
       }
     }
   }
 
   async function startRun(message: string, activeSession: ActiveSession) {
-    append("user", message)
+    const traceId = newId()
+    setEntries((current) => [
+      ...current,
+      { id: newId(), role: "user", text: message },
+      {
+        id: traceId,
+        role: "trace",
+        activities: [],
+        elapsedMs: 0,
+        status: "active",
+      },
+    ])
+    activeTraceIdRef.current = traceId
     runActiveRef.current = true
     runStartedAtRef.current = Date.now()
     setStartPending(true)
     setElapsedMs(0)
-    setActivities([])
     setError(null)
     setArtifactId(null)
     try {
@@ -364,6 +356,8 @@ export default function App() {
       runActiveRef.current = false
       runStartedAtRef.current = null
       setStartPending(false)
+      updateActiveTrace((trace) => ({ ...trace, elapsedMs, status: "failed" }))
+      activeTraceIdRef.current = null
       setError(
         reason instanceof Error ? reason.message : "Unable to start the run."
       )
@@ -408,6 +402,7 @@ export default function App() {
         method: "POST",
       })
       setStage(null)
+      updateActiveTrace((trace) => ({ ...trace, status: "active" }))
       append("system", "Run cancelled. No workbook changes were committed.")
     } catch (reason) {
       setError(
@@ -523,6 +518,14 @@ export default function App() {
                   <MessageScrollerItem key={entry.id} scrollAnchor>
                     {entry.role === "result" ? (
                       <WorkbookResult result={entry.result} />
+                    ) : entry.role === "trace" ? (
+                      <ExecutionTrace
+                        activities={entry.activities}
+                        elapsedMs={
+                          entry.status === "active" ? elapsedMs : entry.elapsedMs
+                        }
+                        status={entry.status}
+                      />
                     ) : entry.role === "user" ? (
                       <Message align="end">
                         <MessageContent>
@@ -556,11 +559,6 @@ export default function App() {
                     )}
                   </MessageScrollerItem>
                 ))}
-                {isRunning ? (
-                  <MessageScrollerItem scrollAnchor>
-                    <RunActivity activities={activities} elapsedMs={elapsedMs} isRunning={!stage} />
-                  </MessageScrollerItem>
-                ) : null}
                 {stage ? (
                   <MessageScrollerItem scrollAnchor>
                     <MutationPreview stage={stage} />

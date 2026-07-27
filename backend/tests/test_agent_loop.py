@@ -78,6 +78,47 @@ def test_nvidia_client_declares_native_function_tools_and_returns_tool_call_meta
     assert "thinking" not in recorded
 
 
+def test_query_tool_and_action_prompt_allow_only_canonical_facts_in_prose() -> None:
+    query_tool = next(
+        tool for tool in MODEL_TOOL_DEFINITIONS if tool["function"]["name"] == "query_workbook"
+    )
+    description = query_tool["function"]["description"]
+    model = FakeModelClient(['{"kind":"final","answer":"The result is displayed."}'])
+
+    run = AgentLoop(model, FakeToolExecutor({})).run("Hello", "System instruction.")
+
+    assert run.status == "completed"
+    assert "publishes a validated structured result for the UI" in description
+    assert "lead with the direct answer by quoting only canonical fields" in description
+    prompt = model.requests[0][0].content
+    assert "UI presentation as the complete data answer" in prompt
+    assert "a metric's value and\ncolumn" in prompt
+    assert "a selection's value, column, and its atomically paired Stable ID" in prompt
+    assert "Do not\ncopy arbitrary table cells into prose" in prompt
+    assert "Write final prose as simple CommonMark" in prompt
+    assert "Never use\nMarkdown tables, raw HTML" in prompt
+    assert "incomplete links, or unclosed code fences" in prompt
+    stage_description = next(
+        tool for tool in MODEL_TOOL_DEFINITIONS if tool["function"]["name"] == "stage_mutation"
+    )["function"]["description"]
+    assert "UI renders the returned exact diff" in stage_description
+    assert "do not\nrecreate its diff, values, rows, or Stable ID" in prompt
+
+
+def test_agent_instructions_translate_houses_into_the_property_type_filter() -> None:
+    query_tool = next(
+        tool for tool in MODEL_TOOL_DEFINITIONS if tool["function"]["name"] == "query_workbook"
+    )
+    description = query_tool["function"]["description"]
+    model = FakeModelClient(['{"kind":"final","answer":"Done."}'])
+
+    AgentLoop(model, FakeToolExecutor({})).run("How many houses are in Texas?", "System.")
+
+    assert "houses or " in description
+    assert "house means Property Type = House" in description
+    assert "houses or house means Property Type = House" in model.requests[0][0].content
+
+
 def test_agent_preserves_native_tool_call_id_in_tool_result_message() -> None:
     class NativeToolModel:
         def complete(self, messages: list[ModelMessage]) -> str | ModelCompletion:

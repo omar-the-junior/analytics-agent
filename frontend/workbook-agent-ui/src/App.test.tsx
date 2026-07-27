@@ -152,6 +152,70 @@ describe("workbook assistant", () => {
     expect(screen.getByText("Listing ID")).toHaveProperty("tagName", "CODE")
   })
 
+  it("shows a persistent expandable execution trace with tool input and output", async () => {
+    stubSessionAndRun()
+    const user = userEvent.setup()
+    renderApp()
+    await startListingsRun(user)
+
+    expect(await screen.findByText("Execution")).toBeInTheDocument()
+    expect(screen.getByText("Starting the run")).toBeInTheDocument()
+    expect(screen.queryByText(/safe progress only/i)).not.toBeInTheDocument()
+
+    await emit({
+      type: "activity",
+      data: {
+        activity: "tool_started",
+        elapsed_ms: 125,
+        iteration: 1,
+        kind: "tool",
+        status: "active",
+        tool: "query_workbook",
+        summary: "Querying workbook data.",
+        input: { calculation: { kind: "max", column: "Revenue Generated" } },
+      },
+    })
+    await emit({
+      type: "activity",
+      data: {
+        activity: "tool_result",
+        elapsed_ms: 250,
+        iteration: 1,
+        kind: "tool",
+        status: "completed",
+        tool: "query_workbook",
+        summary: "Querying workbook data (ok).",
+        output: {
+          status: "ok",
+          kind: "selection",
+          column: "Revenue Generated",
+          value: 503194.13,
+          stable_id: "CMP-8927",
+        },
+      },
+    })
+
+    await user.click(
+      screen.getByRole("button", { name: /querying workbook data.*completed/i })
+    )
+    expect(screen.getByText("Input")).toBeInTheDocument()
+    expect(screen.getByText("Output")).toBeInTheDocument()
+    expect(screen.getAllByText(/"Revenue Generated"/)).toHaveLength(2)
+    expect(screen.getByText(/"CMP-8927"/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole("button", { name: "Toggle execution details" }))
+    expect(screen.queryByText("Input")).not.toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "Toggle execution details" }))
+    await user.click(
+      screen.getByRole("button", { name: /querying workbook data.*completed/i })
+    )
+    expect(screen.getByText("Input")).toBeInTheDocument()
+
+    await emit({ type: "completed", data: { elapsed_ms: 300 } })
+    expect(await screen.findByText("Complete")).toBeInTheDocument()
+    expect(screen.getByText("Execution")).toBeInTheDocument()
+  })
+
   it("renders a structured workbook table without relying on assistant Markdown", async () => {
     stubSessionAndRun()
     const user = userEvent.setup()

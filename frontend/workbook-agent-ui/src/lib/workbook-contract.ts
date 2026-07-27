@@ -1,4 +1,20 @@
 export type WorkbookValue = string | number | boolean | null
+export type TraceValue =
+  | WorkbookValue
+  | TraceValue[]
+  | { [key: string]: TraceValue }
+
+export type Activity = {
+  activity: string
+  elapsed_ms: number
+  iteration?: number
+  kind: "reasoning" | "tool" | "response"
+  status: string
+  summary: string
+  tool?: string
+  input?: Record<string, TraceValue>
+  output?: Record<string, TraceValue>
+}
 
 export type PresentationTable = {
   columns: string[]
@@ -61,6 +77,12 @@ function isWorkbookValue(value: unknown): value is WorkbookValue {
     typeof value === "number" ||
     typeof value === "boolean"
   )
+}
+
+function isTraceValue(value: unknown): value is TraceValue {
+  if (isWorkbookValue(value)) return true
+  if (Array.isArray(value)) return value.every(isTraceValue)
+  return isRecord(value) && Object.values(value).every(isTraceValue)
 }
 
 function isPresentationTable(value: unknown): value is PresentationTable {
@@ -216,6 +238,48 @@ export function parseStage(value: unknown): Stage | null {
     stable_id: value.stable_id,
     warnings: value.warnings,
     preview: { kind: previewKind, columns: preview.columns, rows: preview.rows },
+  }
+}
+
+function parseTraceObject(value: unknown): Record<string, TraceValue> | null {
+  if (!isRecord(value)) return null
+  const trace: Record<string, TraceValue> = {}
+  for (const [key, item] of Object.entries(value)) {
+    if (!isTraceValue(item)) return null
+    trace[key] = item
+  }
+  return trace
+}
+
+export function parseActivity(value: unknown): Activity | null {
+  if (!isRecord(value)) return null
+  const input = value.input === undefined ? undefined : parseTraceObject(value.input)
+  const output = value.output === undefined ? undefined : parseTraceObject(value.output)
+  if (
+    typeof value.activity !== "string" ||
+    typeof value.elapsed_ms !== "number" ||
+    !Number.isFinite(value.elapsed_ms) ||
+    value.elapsed_ms < 0 ||
+    (value.iteration !== undefined && !isNonNegativeInteger(value.iteration)) ||
+    (value.kind !== "reasoning" && value.kind !== "tool" && value.kind !== "response") ||
+    typeof value.status !== "string" ||
+    typeof value.summary !== "string" ||
+    (value.tool !== undefined && typeof value.tool !== "string") ||
+    input === null ||
+    output === null
+  )
+    return null
+
+  return {
+    activity: value.activity,
+    elapsed_ms: value.elapsed_ms,
+    ...(value.iteration === undefined ? {} : { iteration: value.iteration }),
+    kind: value.kind,
+    status: value.status,
+    summary: value.summary,
+    ...(value.tool === undefined ? {} : { tool: value.tool }),
+    ...(input === undefined ? {} : { input }),
+    ...(output === undefined ? {} : { output }),
   }
 }
 

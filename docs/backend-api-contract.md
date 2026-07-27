@@ -39,9 +39,9 @@ Every SSE message has a monotonic event ID and a JSON payload:
 
 The event types are `run_started`, `activity`, `workbook_result`, `assistant_message`, `confirmation_required`, `artifact_ready`, `completed`, `cancelled`, and `failed`. They contain only user-safe content and opaque IDs: never provider errors, filesystem paths, API keys, raw workbook data beyond the requested response, or orchestration instructions.
 
-`activity` is an incremental, UI-safe trace. It may identify an approved tool by name, a generic safe-reasoning phase, status, and elapsed time in milliseconds. It must never include model chain-of-thought, prompts, tool arguments, tool results, or workbook rows. This lets the browser show a truthful activity timeline such as “Reviewing the request” and “Querying workbook data” without exposing private or untrusted content.
+`activity` is an incremental, inspectable execution trace. It identifies an approved tool by name, an observable agent-step label, status, and elapsed time in milliseconds. Tool-start events include the approved JSON input; tool-result events include a bounded output summary. A query summary may contain its kind, selected metric/Stable ID fields, or table schema and counts, but never result rows. This lets the browser show the query the agent ran and what it produced without duplicating large result tables.
 
-`workbook_result` is the only event that may carry requested workbook values. Its data has one `result` object with one of these validated forms:
+`workbook_result` is the only event that carries the complete requested workbook values. Assistant Markdown is a separate prose channel: after a successful query it leads with the direct answer, copied exactly from canonical fields in that same result—a metric value and column; a selection value, column, and atomically paired Stable ID; or a table row count and truncation status. It may then state that the complete result is displayed and offer a concise scope note, caveat, or insight. It must not copy arbitrary table cells or reconstruct rows, rankings, calculations, or ID/value pairs. Its data has one `result` object with one of these validated forms:
 
 ```json
 {
@@ -57,7 +57,7 @@ The event types are `run_started`, `activity`, `workbook_result`, `assistant_mes
 
 Table rows follow `columns` exactly; `row_count` is the number of matching rows before `limit`, and `truncated` says whether any matching row was omitted. The Stable ID is always present in a table, including when the model did not select it. A highest/lowest result uses `kind: "selection"` and carries its `column`, `value`, full `row`, `stable_id_field`, and `stable_id` atomically. Count and sum use `kind: "metric"`, with `metric`, `value`, `column` when applicable, and `row_count`. An unavailable numeric metric has `unavailable: true` and a `reason`; it never substitutes zero.
 
-`confirmation_required` contains `stage_id`, `operation`, `stable_id_field`, `stable_id`, `warnings`, and a typed `preview`. An update preview has `kind: "field_diff"`, columns `Field`, `Before`, `After`, and only changed fields. Insert and delete previews are respectively `after_row` and `before_row`, each with the complete workbook row as `columns` and one `rows` entry. The same `stage_id` remains the only mutation authorization target.
+`confirmation_required` contains `stage_id`, `operation`, `stable_id_field`, `stable_id`, `warnings`, and a typed `preview`. Assistant Markdown may state that the change is staged and invite review and confirmation, but must not recreate the preview's diff, values, row, or Stable ID. An update preview has `kind: "field_diff"`, columns `Field`, `Before`, `After`, and only changed fields. Insert and delete previews are respectively `after_row` and `before_row`, each with the complete workbook row as `columns` and one `rows` entry. The same `stage_id` remains the only mutation authorization target.
 
 `run_started`, `assistant_message`, and terminal events include timing metadata. The API currently streams lifecycle and activity events; final assistant prose is emitted as one `assistant_message`, rather than provider token deltas.
 

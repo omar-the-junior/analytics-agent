@@ -84,6 +84,10 @@ _Avoid_: Demographic preference, protected characteristic, or demographic proxy
 A listing whose `Listing Status` is `Active`.
 _Avoid_: Pending listing as available unless the user explicitly includes it
 
+**Property Type**:
+The canonical listing-category field. A natural-language house, apartment, condo, or townhouse request respectively requires `Property Type` equal to `House`, `Apartment`, `Condo`, or `Townhouse`, in addition to every other requested scope filter.
+_Avoid_: Treating a property type as a description-only term or replacing it with a geographic filter
+
 **Typical Price**:
 The median of the relevant price field within the stated listing scope.
 _Avoid_: Average price unless the user requests a mean
@@ -123,3 +127,7 @@ _Avoid_: Paused run, reversible cancellation
 **Backend Session**:
 The in-memory API record that owns one WorkbookSession and its bounded runs. It expires when the API process restarts, so the browser must not present local demo history as server state.
 _Avoid_: Persisted browser chat, demo session
+
+**Inspectable Execution Trace**:
+The ordered, user-visible account of an agent run: concise agent-step labels plus approved tool inputs and bounded output summaries. It is not hidden reasoning and never carries workbook result rows.
+_Avoid_: Chain of thought, raw tool transcript, second result table

@@ -21,12 +21,23 @@ EVENT_WINDOW = 100
 logger = logging.getLogger("workbook_agent.api")
 SYSTEM_PROMPT = (
     "Use query_workbook whenever workbook data is needed. Use min or max for highest/lowest "
-    "values, and order_by with limit for ranked lists. Quote values, Stable IDs, and rows exactly "
-    "as returned; never calculate, sort, match, or re-pair them in prose. Request presentation "
-    "table for a user-facing workbook result, explain its scope concisely, and never make a "
-    "Markdown table from workbook data. For a requested workbook change, stage exactly one "
-    "mutation and explain the proposed change; never commit a Staged Mutation. Never claim a "
-    "change was made until confirmed."
+    "values, and order_by with limit for ranked lists. Never calculate, sort, match, or re-pair "
+    "workbook data in prose. A successful query publishes its validated result to the UI, so do "
+    "not reproduce the complete result in the final answer. Lead with the direct answer, copied "
+    "exactly from canonical fields in that same result: a metric value and column; a selection "
+    "value, column, and atomically paired Stable ID; or a table row count and truncation status. "
+    "State that the complete result is displayed, but do not copy arbitrary table cells or "
+    "reconstruct rows, rankings, calculations, or ID/value pairs. "
+    "For listings, always translate a named property type into its required Property Type filter "
+    "alongside every geographic or other requested filter: houses or house means Property Type = "
+    "House; apartments or apartment means Apartment; condos or condo means Condo; townhouses or "
+    "townhouse means Townhouse. Never answer a property-type question with a geographic filter "
+    "alone. Write simple CommonMark prose only: paragraphs, optional headings, and ordinary lists; "
+    "never Markdown "
+    "tables, raw HTML, incomplete links, or unclosed code fences. For a requested workbook "
+    "change, stage exactly one mutation; the UI displays its typed preview. Say only that the "
+    "change is staged and invite review and confirmation—do not recreate its diff, values, rows, "
+    "or Stable ID. Never commit a Staged Mutation. Never claim a change was made until confirmed."
 )
 
 
@@ -205,10 +216,11 @@ class ApiRuntime:
         return round((time.monotonic() - run.started_at) * 1000)
 
     def _safe_activity(self, run: RunState, event: TraceEvent) -> dict[str, object] | None:
-        """Translate internal trace signals into UI-safe progress only.
+        """Translate internal trace signals into an inspectable execution timeline.
 
-        Model reasoning, prompts, tool arguments, and workbook results deliberately do
-        not cross this boundary. The UI receives a concise activity label instead.
+        The browser receives concise agent-step labels, approved tool inputs, and bounded
+        output summaries. Query rows and raw provider content remain on their dedicated
+        presentation paths.
         """
 
         detail = event.detail
@@ -238,25 +250,33 @@ class ApiRuntime:
             tool = detail.get("tool")
             if not isinstance(tool, str):
                 return None
-            return {
+            activity = {
                 **base,
                 "kind": "tool",
                 "status": "active",
                 "tool": tool,
                 "summary": self._tool_summary(tool, "active"),
             }
+            tool_input = detail.get("input")
+            if isinstance(tool_input, dict):
+                activity["input"] = tool_input
+            return activity
         if event.event == "tool_result":
             tool = detail.get("tool")
             result = detail.get("status")
             if not isinstance(tool, str) or not isinstance(result, str):
                 return None
-            return {
+            activity = {
                 **base,
                 "kind": "tool",
                 "status": "completed" if result == "ok" else result,
                 "tool": tool,
                 "summary": self._tool_summary(tool, result),
             }
+            tool_output = detail.get("output")
+            if isinstance(tool_output, dict):
+                activity["output"] = self._tool_output_summary(tool, result, tool_output)
+            return activity
         if event.event == "final_answer":
             return {
                 **base,
@@ -276,6 +296,80 @@ class ApiRuntime:
         }
         label = labels.get(tool, "Using an approved workbook tool")
         return f"{label}{'.' if status == 'active' else f' ({status}).'}"
+
+    @staticmethod
+    def _tool_output_summary(
+        tool: str, status: str, payload: dict[str, object]
+    ) -> dict[str, object]:
+        """Create a compact, JSON-safe inspection surface for one tool outcome."""
+
+        if status != "ok":
+            error_code = payload.get("error_code")
+            return {
+                "status": status,
+                **({"error_code": error_code} if isinstance(error_code, str) else {}),
+            }
+
+        if tool == "query_workbook":
+            kind = payload.get("kind")
+            if kind == "table":
+                columns = payload.get("columns")
+                rows = payload.get("rows")
+                row_count = payload.get("row_count")
+                truncated = payload.get("truncated")
+                return {
+                    "status": status,
+                    "kind": "table",
+                    "columns": columns if isinstance(columns, list) else [],
+                    "returned_rows": len(rows) if isinstance(rows, list) else 0,
+                    "row_count": row_count if isinstance(row_count, int) else 0,
+                    "truncated": truncated if isinstance(truncated, bool) else False,
+                }
+            if kind == "selection":
+                return {
+                    "status": status,
+                    "kind": "selection",
+                    **{
+                        field: payload[field]
+                        for field in ("column", "value", "stable_id_field", "stable_id")
+                        if field in payload
+                    },
+                }
+            if kind == "metric":
+                return {
+                    "status": status,
+                    "kind": "metric",
+                    **{
+                        field: payload[field]
+                        for field in ("metric", "column", "value", "row_count", "unavailable")
+                        if field in payload
+                    },
+                }
+
+        if tool == "stage_mutation":
+            preview = payload.get("preview")
+            return {
+                "status": status,
+                **{
+                    field: payload[field]
+                    for field in ("operation", "stable_id_field", "stable_id", "warnings")
+                    if field in payload
+                },
+                **(
+                    {"preview_kind": preview.get("kind")}
+                    if isinstance(preview, dict) and isinstance(preview.get("kind"), str)
+                    else {}
+                ),
+            }
+
+        allowed = {
+            "describe_workbook": ("columns", "stable_id", "row_count"),
+            "commit_mutation": ("version", "verified"),
+        }
+        return {
+            "status": status,
+            **{field: payload[field] for field in allowed.get(tool, ()) if field in payload},
+        }
 
     def complete(self, run: RunState) -> None:
         with run.condition:

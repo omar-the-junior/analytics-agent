@@ -20,7 +20,7 @@ The current `query_workbook` rows operation returns worksheet-order records and 
 - A tool per natural-language phrase.
 - Model-authored values, row IDs, calculations, or Markdown tables as the source of truth.
 - Changing mutation authorization: every Staged Mutation still requires explicit confirmation of its unchanged `stage_id`.
-- Exposing workbook rows through `activity` events.
+- Exposing workbook rows through `activity` events; activity output is a bounded summary, not a second result table.
 
 ## Design principles
 
@@ -124,10 +124,11 @@ Add the following behavioral rules to `ACTION_INSTRUCTIONS` and the runtime syst
 
 1. Use `query_workbook` whenever workbook data is needed.
 2. For highest/lowest, use `min`/`max`; for ranked lists, use `order_by` plus `limit`.
-3. Quote values, Stable IDs, and rows exactly as returned by a tool; never calculate, sort, match, or construct them in prose.
-4. When a query result is meant for the user, request its supported presentation mode; explain its scope and relevant domain caveats in prose.
-5. Never embed a workbook table in Markdown when a structured result is available.
-6. For changes, call `stage_mutation` once, describe the exact Staged Mutation, and never commit it.
+3. A successful query publishes a validated `workbook_result` to the UI. Lead the final answer with the direct answer, copied exactly from canonical fields of that same result: a metric's value and column; a selection's value, column, and atomically paired Stable ID; or a table's row count and truncation status.
+4. State that the complete result is displayed. Do not enumerate or copy arbitrary table cells, or calculate, sort, match, construct, or re-pair rows, values, Stable IDs, or calculations in prose. A concise scope note, relevant domain caveat, or insight may follow.
+5. Use simple CommonMark prose: short paragraphs, optional ATX headings, and ordinary `-` or `1.` lists with a blank line before a list. Never use Markdown tables, raw HTML, incomplete links, or unclosed code fences.
+6. For listings, a named property type is a mandatory `Property Type` filter alongside every geographic or other requested filter: house(s) → `House`, apartment(s) → `Apartment`, condo(s) → `Condo`, and townhouse(s) → `Townhouse`. Never answer a property-type question with its geographic filter alone.
+7. For changes, call `stage_mutation` once. The typed preview is the UI's data answer; say that the change is staged and invite review and confirmation, but do not recreate its diff, values, row, or Stable ID. Never commit it.
 
 ## Browser presentation contract
 
@@ -142,7 +143,7 @@ Add a new SSE event type named `workbook_result`. It is **not** an `activity` ev
 }
 ```
 
-The event must not include model prompts, tool arguments, raw provider responses, filesystem paths, or hidden reasoning. Update `docs/backend-api-contract.md`, `StreamEvent`, API tests, and frontend event parsing together. Keep the existing rule that `activity` never contains workbook data.
+The event must not include model prompts, raw provider responses, filesystem paths, hidden reasoning, or workbook rows. The `activity` event may include approved tool arguments and a bounded output summary so the user can inspect an execution timeline; it is never a second data-presentation channel. Update `docs/backend-api-contract.md`, `StreamEvent`, API tests, and frontend event parsing together.
 
 The frontend renders `workbook_result` with a reusable table component:
 
@@ -205,6 +206,6 @@ Before changing code, read this file, `CONTEXT.md`, `DECISIONS.md` entries D-008
 1. A highest/lowest or ranked result always names the Stable ID from the same returned row.
 2. Repeating the same query on the same Session Workbook produces the same order and table.
 3. A user-requested table is rendered from structured backend data, not model Markdown.
-4. The UI never receives workbook data through `activity` or hidden reasoning fields.
+4. The UI receives no workbook rows through `activity` or hidden reasoning fields; activity may expose approved tool arguments and bounded output summaries.
 5. Mutation confirmation remains exact-stage, explicit, and independent of model prose.
 6. Existing source preservation, mutation verification, and baseline hard gates continue to pass.
