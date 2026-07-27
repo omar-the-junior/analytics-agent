@@ -128,6 +128,14 @@ _Avoid_: Paused run, reversible cancellation
 The in-memory API record that owns one WorkbookSession and its bounded runs. It expires when the API process restarts, so the browser must not present local demo history as server state.
 _Avoid_: Persisted browser chat, demo session
 
+**Conversation Turn**:
+One completed user request and assistant response retained by a Backend Session for bounded follow-up context.
+_Avoid_: Browser-owned chat history, an unfinished run, raw tool transcript
+
+**Query Reference**:
+The row-free, backend-validated record of a completed workbook query: its normalized scope and a compact result summary. It helps interpret a follow-up but never replaces a fresh WorkbookSession query for a workbook-data claim.
+_Avoid_: Cached result table, model-authored query memory, raw workbook rows
+
 **Inspectable Execution Trace**:
 The ordered, user-visible account of an agent run: concise agent-step labels plus approved tool inputs and bounded output summaries. It is not hidden reasoning and never carries workbook result rows.
 _Avoid_: Chain of thought, raw tool transcript, second result table

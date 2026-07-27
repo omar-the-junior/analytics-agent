@@ -12,12 +12,25 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from app.agent_loop import AgentLoop, ModelClient, TraceEvent
+from app.agent_loop import AgentLoop, ModelClient, ModelMessage, TraceEvent
 from app.schemas import SafeError, StreamEvent, WorkbookResultEventData
 from app.settings import Settings
-from app.workbook_session import WorkbookSession, WorkbookToolExecutor
+from app.workbook_session import (
+    MetricQueryResult,
+    QueryRequest,
+    QueryResult,
+    SelectionQueryResult,
+    TableQueryResult,
+    WorkbookSession,
+    WorkbookToolExecutor,
+)
 
 EVENT_WINDOW = 100
+MAX_CONVERSATION_TURNS = 6
+MAX_CONVERSATION_CONTEXT_BYTES = 24 * 1024
+MAX_TURN_TEXT_BYTES = 4 * 1024
+MAX_QUERY_REFERENCES_PER_TURN = 3
+MAX_QUERY_REFERENCE_BYTES = 4 * 1024
 logger = logging.getLogger("workbook_agent.api")
 SYSTEM_PROMPT = (
     "Use query_workbook whenever workbook data is needed. Use min or max for highest/lowest "
@@ -38,6 +51,9 @@ SYSTEM_PROMPT = (
     "change, stage exactly one mutation; the UI displays its typed preview. Say only that the "
     "change is staged and invite review and confirmation—do not recreate its diff, values, rows, "
     "or Stable ID. Never commit a Staged Mutation. Never claim a change was made until confirmed."
+    " Previous completed conversation turns and validated Query References may be provided as "
+    "backend-owned context. Use them only to resolve a follow-up request; read the Session "
+    "Workbook again with query_workbook before making any workbook-data claim."
 )
 
 
@@ -71,6 +87,74 @@ class RunState:
             self.condition.notify_all()
 
 
+@dataclass(frozen=True)
+class QueryReference:
+    """A row-free, validated query record available to later turns in one session."""
+
+    request: dict[str, object]
+    result: dict[str, object]
+
+    @classmethod
+    def from_query(cls, request: QueryRequest, result: QueryResult) -> QueryReference:
+        filters = (
+            [filter_.model_dump() for filter_ in request.filters]
+            if isinstance(request.filters, list)
+            else [
+                {"column": column, "operator": "eq", "value": value}
+                for column, value in request.filters.items()
+            ]
+        )
+        query = {
+            "filters": filters,
+            "select": list(request.select) if request.select is not None else None,
+            "order_by": [order.model_dump() for order in request.order_by],
+            "calculation": request.resolved_calculation.model_dump(),
+            "limit": request.limit,
+        }
+        if isinstance(result, TableQueryResult):
+            summary = {
+                "kind": result.kind,
+                "columns": result.columns,
+                "row_count": result.row_count,
+                "truncated": result.truncated,
+                "stable_id_field": result.stable_id_field,
+            }
+        elif isinstance(result, MetricQueryResult):
+            summary = {
+                "kind": result.kind,
+                "metric": result.metric,
+                "value": result.value,
+                "column": result.column,
+                "row_count": result.row_count,
+                "unavailable": result.unavailable,
+            }
+            if result.reason is not None:
+                summary["reason"] = result.reason
+        elif isinstance(result, SelectionQueryResult):
+            summary = {
+                "kind": result.kind,
+                "column": result.column,
+                "value": result.value,
+                "stable_id_field": result.stable_id_field,
+                "stable_id": result.stable_id,
+            }
+        else:  # pragma: no cover - QueryResult is a closed discriminated union.
+            raise TypeError(f"unsupported query result: {type(result)!r}")
+        return cls(request=query, result=summary)
+
+    def model_payload(self) -> dict[str, object]:
+        return {"request": self.request, "result": self.result}
+
+
+@dataclass(frozen=True)
+class ConversationTurn:
+    """One completed user/assistant exchange retained by the backend session."""
+
+    user_message: str
+    assistant_message: str
+    query_references: tuple[QueryReference, ...] = ()
+
+
 @dataclass
 class SessionState:
     session_id: str
@@ -78,6 +162,7 @@ class SessionState:
     workbook_session: WorkbookSession
     runs: dict[str, RunState] = field(default_factory=dict)
     artifacts: dict[str, Path] = field(default_factory=dict)
+    conversation_turns: list[ConversationTurn] = field(default_factory=list)
 
 
 class ApiRuntime:
@@ -125,24 +210,41 @@ class ApiRuntime:
 
     def _execute(self, session: SessionState, run: RunState) -> None:
         try:
+            with self._lock:
+                conversation_context = self._conversation_context_messages(session)
+            query_references: list[QueryReference] = []
+
             def emit_trace(event: TraceEvent) -> None:
                 activity = self._safe_activity(run, event)
                 if activity is not None:
                     run.emit("activity", activity)
 
+            def publish_query_result(request: QueryRequest, result: QueryResult) -> None:
+                reference = QueryReference.from_query(request, result)
+                reference_bytes = len(
+                    json.dumps(reference.model_payload(), separators=(",", ":")).encode("utf-8")
+                )
+                if reference_bytes <= MAX_QUERY_REFERENCE_BYTES:
+                    query_references.append(reference)
+                run.emit(
+                    "workbook_result", WorkbookResultEventData(result=result).model_dump()
+                )
+
             agent = AgentLoop(
                 self._model_factory(),
                 WorkbookToolExecutor(
                     session.workbook_session,
-                    query_result_callback=lambda result: run.emit(
-                        "workbook_result", WorkbookResultEventData(result=result).model_dump()
-                    ),
+                    query_result_callback=publish_query_result,
                 ),
                 max_iterations=self._settings.agent_max_iterations,
                 run_timeout_seconds=self._settings.agent_run_timeout_seconds,
                 trace_callback=emit_trace,
             )
-            outcome = agent.run(run.message, SYSTEM_PROMPT)
+            outcome = (
+                agent.run(run.message, SYSTEM_PROMPT, conversation_context)
+                if conversation_context
+                else agent.run(run.message, SYSTEM_PROMPT)
+            )
         except ProviderUnavailable:
             self.fail(
                 run, "provider_error", "The model provider is unavailable. Please try again.", True
@@ -174,6 +276,8 @@ class ApiRuntime:
             return
 
         if outcome.status == "completed":
+            if outcome.answer is not None:
+                self._record_completed_turn(session, run.message, outcome.answer, query_references)
             self.complete(run)
             return
         terminal_event = outcome.trace[-1].event if outcome.trace else "internal_error"
@@ -198,6 +302,66 @@ class ApiRuntime:
             error_code,
             message,
             error_code != "policy_rejected",
+        )
+
+    def _conversation_context_messages(self, session: SessionState) -> list[ModelMessage]:
+        turns = session.conversation_turns
+        if not turns:
+            return []
+        query_references = [
+            reference.model_payload()
+            for turn in turns
+            for reference in turn.query_references
+        ]
+        context = [
+            ModelMessage(
+                role="system",
+                content=json.dumps({"query_references": query_references}, separators=(",", ":")),
+            )
+        ]
+        for turn in turns:
+            context.extend(
+                [
+                    ModelMessage(role="user", content=turn.user_message),
+                    ModelMessage(role="assistant", content=turn.assistant_message),
+                ]
+            )
+        return context
+
+    def _record_completed_turn(
+        self,
+        session: SessionState,
+        user_message: str,
+        assistant_message: str,
+        query_references: list[QueryReference],
+    ) -> None:
+        turn = ConversationTurn(
+            user_message=self._truncate_context_text(user_message),
+            assistant_message=self._truncate_context_text(assistant_message),
+            query_references=tuple(query_references[-MAX_QUERY_REFERENCES_PER_TURN:]),
+        )
+        with self._lock:
+            session.conversation_turns.append(turn)
+            while (
+                len(session.conversation_turns) > MAX_CONVERSATION_TURNS
+                or self._conversation_context_size(session) > MAX_CONVERSATION_CONTEXT_BYTES
+            ):
+                session.conversation_turns.pop(0)
+
+    @staticmethod
+    def _truncate_context_text(value: str) -> str:
+        encoded = value.encode("utf-8")
+        if len(encoded) <= MAX_TURN_TEXT_BYTES:
+            return value
+        suffix = "… [truncated]"
+        return encoded[: MAX_TURN_TEXT_BYTES - len(suffix.encode("utf-8"))].decode(
+            "utf-8", errors="ignore"
+        ) + suffix
+
+    def _conversation_context_size(self, session: SessionState) -> int:
+        return sum(
+            len(message.content.encode("utf-8"))
+            for message in self._conversation_context_messages(session)
         )
 
     @staticmethod

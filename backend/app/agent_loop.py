@@ -360,9 +360,15 @@ class AgentLoop:
         self._run_timeout_seconds = run_timeout_seconds
         self._trace_callback = trace_callback
 
-    def run(self, user_request: str, system_prompt: str) -> AgentRun:
+    def run(
+        self,
+        user_request: str,
+        system_prompt: str,
+        conversation_context: list[ModelMessage] | None = None,
+    ) -> AgentRun:
         messages = [
             ModelMessage(role="system", content=f"{system_prompt}\n\n{ACTION_INSTRUCTIONS}"),
+            *(conversation_context or []),
             ModelMessage(role="user", content=user_request),
         ]
         trace: list[TraceEvent] = []

@@ -1,3 +1,5 @@
+import json
+
 from app.agent_loop import AgentRun, ModelMessage, TraceEvent
 from app.api_runtime import ApiRuntime, RunState
 from app.settings import Settings
@@ -61,6 +63,66 @@ def test_runtime_uses_configured_agent_budgets(monkeypatch) -> None:
     runtime._execute(session, run)
 
     assert observed == {"max_iterations": 8, "run_timeout_seconds": 360}
+
+
+def test_runtime_supplies_backend_owned_turns_and_query_reference_to_follow_up() -> None:
+    class RecordingModel:
+        def __init__(self) -> None:
+            self.requests: list[list[ModelMessage]] = []
+            self.responses = [
+                json.dumps(
+                    {
+                        "kind": "tool_batch",
+                        "tool_calls": [
+                            {
+                                "name": "query_workbook",
+                                "arguments": {
+                                    "filters": [
+                                        {"column": "State", "operator": "eq", "value": "Texas"}
+                                    ],
+                                    "calculation": {"kind": "count"},
+                                },
+                            }
+                        ],
+                    }
+                ),
+                json.dumps({"kind": "final", "answer": "There are 90 Texas listings."}),
+                json.dumps({"kind": "final", "answer": "The complete result is displayed."}),
+            ]
+
+        def complete(self, messages: list[ModelMessage]) -> str:
+            self.requests.append(messages.copy())
+            return self.responses.pop(0)
+
+    model = RecordingModel()
+    runtime = ApiRuntime(Settings(), model_factory=lambda: model)
+    session = runtime.create_session("listings")
+
+    runtime._execute(session, RunState("run-first", "How many listings are in Texas?"))
+    runtime._execute(session, RunState("run-second", "Show that result again."))
+
+    follow_up_messages = model.requests[-1]
+    assert [message.role for message in follow_up_messages] == [
+        "system",
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert follow_up_messages[2].content == "How many listings are in Texas?"
+    assert follow_up_messages[3].content == "There are 90 Texas listings."
+    assert follow_up_messages[4].content == "Show that result again."
+
+    query_context = json.loads(follow_up_messages[1].content)
+    assert query_context["query_references"][0]["request"] == {
+        "filters": [{"column": "State", "operator": "eq", "value": "Texas"}],
+        "select": None,
+        "order_by": [],
+        "calculation": {"kind": "count", "column": None},
+        "limit": 10,
+    }
+    assert query_context["query_references"][0]["result"]["kind"] == "metric"
+    assert "rows" not in query_context["query_references"][0]["result"]
 
 
 def test_runtime_reports_the_specific_exhausted_budget(monkeypatch) -> None:

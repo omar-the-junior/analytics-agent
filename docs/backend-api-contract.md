@@ -11,7 +11,7 @@ This is the implementation handoff for the separate frontend task. It preserves 
 5. A `confirmation_required` event presents an exact Staged Mutation. The frontend submits its `stage_id` to the confirmation endpoint; it cannot convert chat text into authorization.
 6. Terminal events are `completed`, `cancelled`, or `failed`. A completed mutation may contain an opaque artifact reference, downloaded through its dedicated endpoint.
 
-Session state and the bounded event replay window are in memory only. They end on an API-process restart.
+Session state, a bounded backend-owned Conversation Turn history, and the bounded event replay window are in memory only. They end on an API-process restart. The browser never submits conversation history to the agent. For a follow-up, the backend supplies completed user/assistant turns plus row-free Query References containing validated query scope and compact result metadata. The agent must still call `query_workbook` before making a workbook-data claim.
 
 ## Endpoint shape
 

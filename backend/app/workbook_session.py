@@ -734,7 +734,7 @@ class WorkbookToolExecutor:
     def __init__(
         self,
         session: WorkbookSession,
-        query_result_callback: Callable[[QueryResult], None] | None = None,
+        query_result_callback: Callable[[QueryRequest, QueryResult], None] | None = None,
     ) -> None:
         self._session = session
         self._query_result_callback = query_result_callback
@@ -745,7 +745,10 @@ class WorkbookToolExecutor:
         if tool_call.name == "query_workbook":
             result = self._session.query_workbook(tool_call.arguments)
             if result.status == "ok" and self._query_result_callback is not None:
-                self._query_result_callback(QUERY_RESULT_ADAPTER.validate_python(result.payload))
+                self._query_result_callback(
+                    QueryRequest.model_validate(tool_call.arguments, strict=True),
+                    QUERY_RESULT_ADAPTER.validate_python(result.payload),
+                )
             return result
         if tool_call.name == "stage_mutation":
             return self._session.stage_mutation(tool_call.arguments)
